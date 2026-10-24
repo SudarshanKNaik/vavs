@@ -629,6 +629,14 @@ async def _handle_send_sms(node: dict, context: dict) -> tuple[bool, dict]:
     if not phone:
         return False, _step_log(node, "error", "No patient phone number available")
 
+    if not (settings.twilio_account_sid and settings.twilio_auth_token and settings.twilio_phone_number):
+        return False, _step_log(
+            node,
+            "error",
+            "Twilio is not configured. Set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN "
+            "and TWILIO_PHONE_NUMBER in backend/.env to enable SMS.",
+        )
+
     try:
         from twilio.rest import Client as TwilioClient
 

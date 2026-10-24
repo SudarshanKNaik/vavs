@@ -4,10 +4,22 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BACKEND_DIR="${ROOT_DIR}/backend"
 
+POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-caresync-postgres}"
+
 cd "${ROOT_DIR}"
 
-echo "Starting PostgreSQL container..."
-docker compose up -d postgres
+# The container name is fixed in docker-compose.yml, so a container created
+# from another checkout of this repo would make `docker compose up` fail with
+# a name conflict. Reuse it instead.
+if docker ps --format '{{.Names}}' | grep -qx "${POSTGRES_CONTAINER}"; then
+  echo "PostgreSQL container ${POSTGRES_CONTAINER} is already running; reusing it"
+elif docker ps -a --format '{{.Names}}' | grep -qx "${POSTGRES_CONTAINER}"; then
+  echo "Starting existing PostgreSQL container ${POSTGRES_CONTAINER}..."
+  docker start "${POSTGRES_CONTAINER}"
+else
+  echo "Starting PostgreSQL container..."
+  docker compose up -d postgres
+fi
 
 echo "Applying migrations..."
 "${BACKEND_DIR}/scripts/migrate_local_postgres.sh"
