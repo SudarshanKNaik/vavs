@@ -148,5 +148,6 @@ Don't commit `backend/.env`. It is already listed in `backend/.gitignore`.
 | `container name "/caresync-postgres" is already in use` | Another project copy owns the container. The bootstrap script now reuses it. If you use `docker compose up` directly, run `docker start caresync-postgres` instead. |
 | `port 5432 is already allocated` | Another Postgres is running. Stop it, or check `lsof -i :5432` |
 | `/health` shows `"database":"unreachable"` | The DB container is stopped. Run `docker start caresync-postgres` |
-| `Address already in use` on port 8000 or 3000 | A server is already running. Find it with `lsof -i :8000` and stop it |
+| `Address already in use` / `Port 8000 is already in use` | A backend is already running. Find it with `lsof -i :8000`, then `kill <PID>` |
+| `Port 3000 is in use ... using 3001` followed by `Unable to acquire lock at .next/dev/lock` | Another `next dev` is already running for this folder. Find it with `lsof -i :3000`, `kill <PID>`, then run `npm run dev` again |
 | Frontend loads but shows no data | The backend isn't running. Check http://localhost:8000/health |

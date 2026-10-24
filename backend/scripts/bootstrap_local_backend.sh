@@ -39,5 +39,12 @@ if [[ ! -f ".deps_installed" ]] || [[ requirements.txt -nt .deps_installed ]]; t
   touch .deps_installed
 fi
 
+if lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "Port 8000 is already in use (is the backend already running?):" >&2
+  lsof -nP -iTCP:8000 -sTCP:LISTEN >&2
+  echo "Stop that process (kill <PID>) and run this script again." >&2
+  exit 1
+fi
+
 echo "Starting FastAPI backend on http://0.0.0.0:8000"
 exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload
