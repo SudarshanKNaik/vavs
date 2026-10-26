@@ -3456,9 +3456,10 @@ async def elevenlabs_webhook(request: Request):
         }
 
     # ---- extract data collection results ----
-    data_section = payload.get("data", {})
-    analysis = data_section.get("analysis", {})
-    dcr = analysis.get("data_collection_results", {})
+    data_section = payload.get("data") or {}
+    # ElevenLabs sends "analysis": null until analysis is ready.
+    analysis = data_section.get("analysis") or {}
+    dcr = analysis.get("data_collection_results") or {}
 
     def _dcr_val(key: str) -> str:
         return _normalize_dcr_value(dcr.get(key, {}))
@@ -4132,8 +4133,9 @@ async def check_call_status(log_id: str):
         }
 
     # Conversation is done — extract data collection results
-    analysis = conversation.get("analysis", {})
-    dcr = analysis.get("data_collection_results", {})
+    # ElevenLabs returns "analysis": null until analysis is ready.
+    analysis = conversation.get("analysis") or {}
+    dcr = analysis.get("data_collection_results") or {}
 
     def _dcr_val(key: str) -> str:
         return _normalize_dcr_value(dcr.get(key, {}))
