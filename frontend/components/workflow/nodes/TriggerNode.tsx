@@ -1,7 +1,6 @@
 'use client';
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { Zap } from 'lucide-react';
 import { type WorkflowNodeData } from '../types';
 
 export default function TriggerNode({ data, selected }: NodeProps) {
@@ -21,7 +20,6 @@ export default function TriggerNode({ data, selected }: NodeProps) {
     >
       {/* Header */}
       <div className="flex items-center gap-2 mb-2">
-        <Zap className="size-4 text-blue-600" aria-hidden />
         <span className="text-[10px] text-blue-600 uppercase tracking-widest font-bold">Trigger</span>
       </div>
 
