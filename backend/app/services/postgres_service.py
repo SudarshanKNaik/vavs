@@ -1471,6 +1471,22 @@ def list_doctor_appointments(doctor_id: str) -> list[dict[str, Any]]:
         else "NULL::text AS report_date"
     )
     report_join = "LEFT JOIN reports r ON r.id = a.report_id" if has_report_id else ""
+    if _table_has_column("appointments", "cancelled_by"):
+        change_cols = (
+            "a.cancelled_by, a.cancelled_at, a.rescheduled_to_appointment_id, "
+            "s2.slot_start AS rescheduled_to_slot_start"
+        )
+        change_join = (
+            "LEFT JOIN appointments a2 ON a2.id = a.rescheduled_to_appointment_id "
+            "LEFT JOIN availability_slots s2 ON s2.id = a2.slot_id"
+        )
+    else:
+        change_cols = (
+            "NULL::text AS cancelled_by, NULL::timestamptz AS cancelled_at, "
+            "NULL::uuid AS rescheduled_to_appointment_id, "
+            "NULL::timestamptz AS rescheduled_to_slot_start"
+        )
+        change_join = ""
 
     with _cursor() as cur:
         cur.execute(
@@ -1492,17 +1508,71 @@ def list_doctor_appointments(doctor_id: str) -> list[dict[str, Any]]:
                 s.slot_start,
                 s.slot_end,
                 {report_title_expr},
-                {report_date_expr}
+                {report_date_expr},
+                {change_cols}
             FROM appointments a
             LEFT JOIN patients p ON p.id = a.patient_id
             LEFT JOIN availability_slots s ON s.id = a.slot_id
             {report_join}
+            {change_join}
             WHERE a.doctor_id = %s
             ORDER BY a.created_at DESC
             """,
             (doctor_id,),
         )
         return list(cur.fetchall())
+
+
+def list_doctor_appointment_activity(doctor_id: str, days: int = 14, limit: int = 30) -> list[dict[str, Any]]:
+    """Recent appointment changes for the doctor's dashboard and bell, newest first.
+
+    One row per event: 'booked' (new appointment), 'cancelled' (with who did
+    it) or 'rescheduled' (patient moved it; includes the new time).
+    """
+    if not _table_has_column("appointments", "cancelled_by"):
+        return []
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT * FROM (
+                SELECT
+                    CASE WHEN a.rescheduled_to_appointment_id IS NOT NULL THEN 'rescheduled' ELSE 'cancelled' END AS kind,
+                    a.id AS appointment_id,
+                    a.cancelled_at AS happened_at,
+                    a.cancelled_by AS actor,
+                    p.name AS patient_name,
+                    s.slot_start,
+                    s2.slot_start AS new_slot_start
+                FROM appointments a
+                JOIN patients p ON p.id = a.patient_id
+                LEFT JOIN availability_slots s ON s.id = a.slot_id
+                LEFT JOIN appointments a2 ON a2.id = a.rescheduled_to_appointment_id
+                LEFT JOIN availability_slots s2 ON s2.id = a2.slot_id
+                WHERE a.doctor_id = %s
+                  AND a.status = 'cancelled'
+                  AND a.cancelled_at > now() - make_interval(days => %s)
+
+                UNION ALL
+
+                -- New bookings, except the new half of a reschedule (shown above).
+                SELECT
+                    'booked', a.id, a.created_at, NULL, p.name, s.slot_start, NULL
+                FROM appointments a
+                JOIN patients p ON p.id = a.patient_id
+                LEFT JOIN availability_slots s ON s.id = a.slot_id
+                WHERE a.doctor_id = %s
+                  AND a.created_at > now() - make_interval(days => %s)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM appointments old
+                        WHERE old.rescheduled_to_appointment_id = a.id
+                  )
+            ) events
+            ORDER BY happened_at DESC
+            LIMIT %s
+            """,
+            (doctor_id, days, doctor_id, days, limit),
+        )
+        return _json_safe(list(cur.fetchall()))
 
 
 def get_appointment(appointment_id: str) -> dict[str, Any] | None:
