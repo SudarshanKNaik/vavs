@@ -235,6 +235,7 @@ flowchart TD
 
 1. **Upload** (`POST /api/blood-campaigns/upload`): an `.xlsx` with a `donors` sheet and an `ngos` sheet. Invalid rows are reported back, and locations are geocoded for the map.
 2. **Start** (`POST /api/blood-campaigns/start`, or the `start_blood_campaign` workflow action): choose the blood type, recipient, reason, location and batch size (1–10).
+   Blood requests (`POST /api/blood-requests`) also choose a **source**: `donors`, `orgs` (blood banks and hospitals in `blood_donor_org`) or `any` (whoever is nearest). Only targets within `radius_km` (default 20) of the hospital are called. An organization that says yes ends the search; one that hangs up is retried once in the next batch, then dropped. See `backend/BLOOD_AGENT.md` for the agent setup and `backend/scripts/seed_blood_orgs.py` to load organizations.
 3. **Eligibility**: a donor must belong to the same doctor, have a compatible blood type, not have been called in this campaign, and be past the donation cooldown (90 days since their last donation for men, 120 for women).
 4. **Calls**: each batch is called at once, using the blood donor agent (`ELEVENLABS_BLOOD_AGENT_ID`, falling back to `ELEVENLABS_AGENT_ID`). The agent records `donor_consent` and `call_outcome`.
 5. **Stop rule**: the first donor who agrees ends the campaign. Otherwise the next batch is called until no eligible donors remain.

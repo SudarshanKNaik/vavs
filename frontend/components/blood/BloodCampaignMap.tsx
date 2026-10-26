@@ -64,7 +64,10 @@ function markerColorByStatus(status?: string): string {
     case "completed":
       return "#22c55e";
     case "failed":
+    case "declined":
       return "#ef4444";
+    case "hangup":
+      return "#f97316";
     case "queued":
       return "#3b82f6";
     default:
@@ -190,15 +193,20 @@ export default function BloodCampaignMap({ patient, donors, ngos }: Props) {
     });
 
     ngoPoints.forEach(({ ngo, point }) => {
+      const contacted = !!ngo.status && ngo.status !== "not-contacted";
+      const ngoColor = contacted ? markerColorByStatus(ngo.status) : "#2563eb";
       L.circleMarker([point.lat, point.lon], {
         radius: 8,
-        color: "#2563eb",
-        fillColor: "#2563eb",
+        color: ngoColor,
+        fillColor: ngoColor,
         fillOpacity: 0.65,
         weight: 2,
       })
         .bindPopup(
-          buildPopupContent(ngo.name || "NGO", [ngo.location || "Unknown location"]),
+          buildPopupContent(ngo.name || "Organization", [
+            ...(contacted ? [`Status: ${ngo.status}`] : []),
+            ngo.location || "Unknown location",
+          ]),
         )
         .addTo(markerLayer);
     });

@@ -1560,7 +1560,11 @@ export interface BloodNgoItem {
 export interface BloodCampaignAttempt {
   id: string;
   campaign_id: string;
-  donor_id: string;
+  donor_id?: string | null;
+  org_id?: string | null;
+  target_type?: "donor" | "org";
+  attempt_number?: number;
+  units_confirmed?: number | null;
   worker_pool_id?: string | null;
   worker_name?: string | null;
   status: string;
@@ -1688,6 +1692,8 @@ export async function getBloodCampaignStatus(campaignId: string) {
 
 export type BloodComponent = "whole_blood" | "packed_rbc" | "platelets" | "plasma";
 export type BloodUrgency = "emergency" | "urgent" | "planned";
+// Where blood may come from: individual donors, blood-storing organizations, or either.
+export type BloodSource = "donors" | "orgs" | "any";
 
 export interface BloodRequestInput {
   doctor_id: string;
@@ -1704,6 +1710,8 @@ export interface BloodRequestInput {
   hospital_location: string;
   contact_name: string;
   contact_phone: string;
+  source?: BloodSource;
+  radius_km?: number;
 }
 
 export interface BloodRequestItem {
@@ -1720,6 +1728,8 @@ export interface BloodRequestItem {
   patient_location?: string | null;
   contact_name?: string | null;
   contact_phone?: string | null;
+  source?: BloodSource;
+  radius_km?: number;
   status: string;
   created_at: string;
   completed_at?: string | null;

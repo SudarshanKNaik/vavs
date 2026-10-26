@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.services.elevenlabs_service import (
     get_conversation,
     get_conversation_by_call_sid,
+    get_twilio_call_status,
     initiate_outbound_call,
 )
 
@@ -38,6 +39,13 @@ URGENCY_LABELS = {
 }
 # How many donors to call at once for each urgency: wider nets for emergencies.
 URGENCY_BATCH_SIZES = {"emergency": 6, "urgent": 4, "planned": 2}
+
+
+def default_batch_size(urgency: str) -> int:
+    """Calls placed at once: BLOOD_BATCH_SIZE if set, else by urgency."""
+    return settings.blood_batch_size or URGENCY_BATCH_SIZES.get(urgency, 3)
+
+
 _NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 _LAT_LON_PATTERN = re.compile(
     r"^\s*([+-]?\d{1,2}(?:\.\d+)?)\s*[,\s]\s*([+-]?\d{1,3}(?:\.\d+)?)\s*$"
@@ -127,20 +135,15 @@ def _geocode_plain_location(location_text: str) -> tuple[float | None, float | N
             best_match: tuple[float, float, float] | None = None
 
             for candidate_query in _candidate_location_queries(query):
+                # India only: calls are placed to +91 numbers, and a global
+                # fallback turned a typo like "ggd" into a city in the
+                # Netherlands, which put every donor "out of range".
                 for pass_params in (
-                    # Prefer India results for this project.
                     {
                         "q": candidate_query,
                         "format": "jsonv2",
                         "addressdetails": 1,
                         "countrycodes": "in",
-                        "limit": 5,
-                    },
-                    # Fallback to global search if India-only returns none.
-                    {
-                        "q": candidate_query,
-                        "format": "jsonv2",
-                        "addressdetails": 1,
                         "limit": 5,
                     },
                 ):
@@ -397,7 +400,7 @@ def parse_blood_excel(contents: bytes) -> dict[str, Any]:
     workbook = load_workbook(filename=BytesIO(contents), data_only=True)
 
     donor_sheet = _get_sheet_by_name(workbook, "donors")
-    ngo_sheet = _get_sheet_by_name(workbook, "ngos")
+    ngo_sheet = _get_sheet_by_name(workbook, "orgs") or _get_sheet_by_name(workbook, "ngos")
 
     donor_required = {
         "name",
@@ -425,6 +428,8 @@ def parse_blood_excel(contents: bytes) -> dict[str, Any]:
 
         donor_headers = _header_map(list(donor_rows[0]))
         ngo_headers = _header_map(list(ngo_rows[0]))
+        if "org_name" in ngo_headers and "ngo_name" not in ngo_headers:
+            ngo_headers["ngo_name"] = ngo_headers["org_name"]
 
         missing_donor = sorted(donor_required - set(donor_headers.keys()))
         missing_ngo = sorted(ngo_required - set(ngo_headers.keys()))
@@ -536,7 +541,7 @@ def ingest_blood_excel(doctor_id: str, contents: bytes) -> dict[str, Any]:
     parsed = parse_blood_excel(contents)
 
     donor_result = db.upsert_blood_donors(doctor_id, parsed["donors"])
-    ngo_result = db.upsert_blood_ngos(doctor_id, parsed["ngos"])
+    ngo_result = db.upsert_blood_orgs(doctor_id, parsed["ngos"])
 
     return {
         "donors": {
@@ -583,6 +588,61 @@ def _is_positive_outcome(conversation: dict[str, Any]) -> bool:
     return False
 
 
+# Twilio call states that mean the callee never picked up.
+_TWILIO_NOT_CONNECTED = {"no-answer", "busy", "canceled", "failed", "completed"}
+# ~90 s of ringing (polls are 10 s apart) before an "initiated" call is dropped.
+UNANSWERED_MAX_POLLS = 9
+ANALYSIS_MAX_WAITS = 6
+ANALYSIS_WAIT_SEC = 5
+
+
+def _call_duration(conversation: dict[str, Any]) -> int:
+    meta = conversation.get("metadata") or {}
+    try:
+        return int(meta.get("call_duration_secs") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+_YES = {"yes", "true", "1", "available", "accepted", "confirmed"}
+_NO = {"no", "false", "0", "unavailable", "not_available", "not available", "declined"}
+
+
+def _classify_org_call(conversation: dict[str, Any]) -> tuple[str, int | None]:
+    """Outcome of a call to a blood-storing organization.
+
+    Returns ``(outcome, units)`` where outcome is ``accepted`` (they have the
+    blood), ``declined`` (a clear no) or ``hangup`` (the call ended without an
+    answer: they cut it, didn't pick up, or it failed).
+    """
+    status = str(conversation.get("status") or "").lower()
+    analysis = conversation.get("analysis") or {}
+    dcr = analysis.get("data_collection_results") or {}
+
+    availability = _dcr_value(dcr, "availability").lower()
+    if not availability:
+        # Agents not yet given the organization fields answer with the donor
+        # ones (donor_consent yes/no).
+        availability = _dcr_value(dcr, "donor_consent").lower()
+    if not availability:
+        outcome_text = _dcr_value(dcr, "call_outcome").lower()
+        if any(k in outcome_text for k in ("not_available", "not available", "unavailable", "declin", "no stock")):
+            availability = "no"
+        elif any(k in outcome_text for k in ("accept", "available", "confirm")):
+            availability = "yes"
+
+    units: int | None = None
+    match = re.search(r"\d+", _dcr_value(dcr, "units_available"))
+    if match:
+        units = int(match.group())
+
+    if availability in _YES:
+        return "accepted", units
+    if availability in _NO:
+        return "declined", None
+    return "hangup", None
+
+
 async def _process_donor_attempt(
     *,
     campaign: dict[str, Any],
@@ -590,7 +650,13 @@ async def _process_donor_attempt(
     attempt: dict[str, Any],
     worker: dict[str, Any],
 ) -> dict[str, Any]:
+    """Call one donor or organization and record how it went.
+
+    ``donor`` is the eligible-target row; ``donor["target_type"]`` says which.
+    """
     attempt_id = str(attempt["id"])
+    is_org = donor.get("target_type") == "org"
+    target_key = "org_id" if is_org else "donor_id"
 
     try:
         db.update_campaign_attempt(
@@ -627,13 +693,25 @@ async def _process_donor_attempt(
             facility_address=campaign.get("patient_location") or "",
             facility_phone_number="",
             call_reason=call_reason,
-            available_slots="Please confirm if you can donate as soon as possible.",
+            available_slots=(
+                "Please confirm how many units you can supply right now."
+                if is_org
+                else "Please confirm if you can donate as soon as possible."
+            ),
             report_title="Blood Donation Request",
             report_date=datetime.now(timezone.utc).date().isoformat(),
             extra_context={
                 "campaign_id": str(campaign["id"]),
                 "attempt_id": attempt_id,
-                "donor_id": str(donor["id"]),
+                target_key: str(donor["id"]),
+                "call_type": "org" if is_org else "donor",
+                "blood_type": campaign["blood_type"],
+                "blood_component": component_label,
+                "units_needed": int(campaign.get("units_needed") or 1),
+                "recipient_name": campaign.get("recipient_name") or "",
+                "hospital_name": campaign.get("hospital_name") or "",
+                "contact_name": campaign.get("contact_name") or "",
+                "contact_phone": campaign.get("contact_phone") or "",
             },
             agent_id_override=worker.get("agent_id"),
             phone_number_id_override=worker.get("phone_number_id"),
@@ -656,9 +734,13 @@ async def _process_donor_attempt(
         max_polls = 40
         poll_interval_sec = 10
 
+        unanswered_polls = 0
+        analysis_waits = 0
         for _ in range(max_polls):
             if not resolved_conversation_id and call_sid:
-                resolved_conversation_id = await get_conversation_by_call_sid(call_sid)
+                resolved_conversation_id = await get_conversation_by_call_sid(
+                    call_sid, agent_id=worker.get("agent_id")
+                )
                 if resolved_conversation_id:
                     db.update_campaign_attempt(
                         attempt_id,
@@ -674,24 +756,68 @@ async def _process_donor_attempt(
 
             conversation = await get_conversation(resolved_conversation_id)
             status = str(conversation.get("status") or "").lower()
-            if status in {"in_progress", "processing", "initiated", "queued"}:
+
+            # A callee who rejects or never answers leaves the ElevenLabs
+            # conversation at "initiated" indefinitely. Twilio knows the call
+            # ended; without it, give up after UNANSWERED_MAX_POLLS.
+            if status in {"initiated", "queued"} and not _call_duration(conversation):
+                unanswered_polls += 1
+                twilio_status = await get_twilio_call_status(call_sid) if call_sid else None
+                if (
+                    twilio_status in _TWILIO_NOT_CONNECTED
+                    or unanswered_polls >= UNANSWERED_MAX_POLLS
+                ):
+                    conversation = {"status": "no_answer", "analysis": {}}
+                    status = "no_answer"
+            elif status in {"in_progress", "processing", "initiated", "queued"}:
+                await asyncio.sleep(poll_interval_sec)
+                continue
+            elif (
+                status == "done"
+                and not ((conversation.get("analysis") or {}).get("data_collection_results"))
+                and analysis_waits < ANALYSIS_MAX_WAITS
+            ):
+                # The call is over but ElevenLabs is still analysing it.
+                analysis_waits += 1
+                await asyncio.sleep(ANALYSIS_WAIT_SEC)
+                continue
+
+            if status == "initiated" or status == "queued":
                 await asyncio.sleep(poll_interval_sec)
                 continue
 
-            accepted = _is_positive_outcome(conversation)
-            new_status = "accepted" if accepted else "completed"
-            db.update_campaign_attempt(
-                attempt_id,
-                {
-                    "status": new_status,
-                    "outcome": "accepted" if accepted else (status or "completed"),
-                    "message": "Donor accepted" if accepted else "Call completed",
-                    "completed_at": _utc_now_iso(),
-                    "updated_at": _utc_now_iso(),
-                },
-            )
+            units: int | None = None
+            if is_org:
+                outcome, units = _classify_org_call(conversation)
+                accepted = outcome == "accepted"
+                new_status = outcome
+                message = {
+                    "accepted": "Organization has the blood"
+                    + (f" ({units} unit(s))" if units else ""),
+                    "declined": "Organization has no stock",
+                    "hangup": "Call ended without an answer",
+                }[outcome]
+            else:
+                accepted = _is_positive_outcome(conversation)
+                new_status = "accepted" if accepted else "completed"
+                message = (
+                    "Donor accepted"
+                    if accepted
+                    else "No answer" if status == "no_answer" else "Call completed"
+                )
+            update: dict[str, Any] = {
+                "status": new_status,
+                "outcome": "accepted" if accepted else (new_status if is_org else (status or "completed")),
+                "message": message,
+                "completed_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+            }
+            if units is not None:
+                update["units_confirmed"] = units
+            db.update_campaign_attempt(attempt_id, update)
             return {
                 "accepted": accepted,
+                "is_org": is_org,
                 "donor_id": str(donor["id"]),
                 "attempt_id": attempt_id,
             }
@@ -706,7 +832,7 @@ async def _process_donor_attempt(
                 "updated_at": _utc_now_iso(),
             },
         )
-        return {"accepted": False, "donor_id": str(donor["id"]), "attempt_id": attempt_id}
+        return {"accepted": False, "is_org": is_org, "donor_id": str(donor["id"]), "attempt_id": attempt_id}
 
     except Exception as exc:
         logger.exception("Blood campaign donor attempt failed")
@@ -720,7 +846,7 @@ async def _process_donor_attempt(
                 "updated_at": _utc_now_iso(),
             },
         )
-        return {"accepted": False, "donor_id": str(donor["id"]), "attempt_id": attempt_id}
+        return {"accepted": False, "is_org": is_org, "donor_id": str(donor["id"]), "attempt_id": attempt_id}
 
 
 async def run_blood_campaign_dispatch(campaign_id: str) -> None:
@@ -749,7 +875,7 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
         if latest_campaign.get("status") not in {"running", "draft"}:
             return
 
-        donors = db.list_campaign_eligible_donors(campaign_id, limit=batch_size, offset=0)
+        donors = db.list_campaign_eligible_targets(campaign_id, limit=batch_size)
         if not donors:
             db.update_blood_campaign(
                 campaign_id,
@@ -789,13 +915,18 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
         tasks = []
         for idx, donor in enumerate(donors):
             worker = worker_pools[idx % len(worker_pools)]
+            is_org = donor.get("target_type") == "org"
             attempt = db.create_campaign_attempt(
                 {
                     "campaign_id": campaign_id,
-                    "donor_id": donor["id"],
+                    "org_id" if is_org else "donor_id": donor["id"],
                     "worker_pool_id": worker.get("id"),
                     "status": "queued",
-                    "eligibility_reason": "blood type + cooldown eligible",
+                    "eligibility_reason": (
+                        "within radius"
+                        if is_org
+                        else "blood type + cooldown eligible"
+                    ),
                     "message": "Queued for call",
                 }
             )
@@ -810,17 +941,23 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
 
         batch_results = await asyncio.gather(*tasks, return_exceptions=False)
         accepted_donor_ids.extend(
-            result["donor_id"] for result in batch_results if result.get("accepted")
+            result["donor_id"]
+            for result in batch_results
+            if result.get("accepted") and not result.get("is_org")
+        )
+        org_accepted = any(
+            result.get("accepted") and result.get("is_org") for result in batch_results
         )
 
-        # Keep calling new batches until enough donors have said yes for the
+        # An organization saying yes ends the search at once. Otherwise keep
+        # calling new batches until enough donors have said yes for the
         # number of units the doctor asked for.
-        if len(accepted_donor_ids) >= units_needed:
+        if org_accepted or len(accepted_donor_ids) >= units_needed:
             db.update_blood_campaign(
                 campaign_id,
                 {
                     "status": "stopped",
-                    "accepted_donor_id": accepted_donor_ids[0],
+                    "accepted_donor_id": accepted_donor_ids[0] if accepted_donor_ids else None,
                     "completed_at": _utc_now_iso(),
                     "updated_at": _utc_now_iso(),
                 },
@@ -901,10 +1038,16 @@ def get_blood_campaign_map_points(campaign_id: str) -> dict[str, Any] | None:
         return None
 
     donors = db.list_blood_donors(str(campaign["doctor_id"]))
-    ngos = db.list_blood_ngos(str(campaign["doctor_id"]))
+    ngos = db.list_blood_orgs(str(campaign["doctor_id"]))
 
     attempt_rows = db.list_campaign_attempts(campaign_id)
-    attempt_by_donor = {str(row.get("donor_id")): row for row in attempt_rows}
+    attempt_by_donor = {
+        str(row["donor_id"]): row for row in attempt_rows if row.get("donor_id")
+    }
+    # Latest attempt per organization (a retry replaces the earlier hang-up).
+    attempt_by_org = {
+        str(row["org_id"]): row for row in attempt_rows if row.get("org_id")
+    }
 
     donor_points = []
     for donor in donors:
@@ -925,10 +1068,12 @@ def get_blood_campaign_map_points(campaign_id: str) -> dict[str, Any] | None:
     ngo_points = [
         {
             "id": str(ngo.get("id")),
-            "name": ngo.get("ngo_name"),
+            "name": ngo.get("org_name"),
             "location": ngo.get("location"),
             "latitude": ngo.get("latitude"),
             "longitude": ngo.get("longitude"),
+            "status": (attempt_by_org.get(str(ngo.get("id"))) or {}).get("status")
+            or "not-contacted",
         }
         for ngo in ngos
     ]

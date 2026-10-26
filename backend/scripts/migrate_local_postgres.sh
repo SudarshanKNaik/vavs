@@ -95,6 +95,7 @@ migration_files=(
   025_add_ngo_darpan_id.sql
   026_patient_preferred_language.sql
   027_webrtc_consultation_rooms.sql
+  028_blood_donor_orgs.sql
 )
 
 existing_markers="$(run_psql -tAc 'SELECT COUNT(*) FROM schema_migrations;' | tr -d '[:space:]')"
