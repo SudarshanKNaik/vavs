@@ -54,6 +54,60 @@ const FILTERS: { value: Filter; label: string }[] = [
 
 const LEVEL_ICONS: Record<OutbreakLevel, typeof Siren> = { alert: Siren, watch: Eye, normal: Check };
 
+// Suggestions only; any city name works (it's looked up on OpenStreetMap).
+const SAMPLE_CITIES = [
+  "Hubli–Dharwad", "Bengaluru", "Mumbai", "Delhi", "Pune", "Hyderabad",
+  "Chennai", "Kolkata", "Mysuru", "Belagavi",
+];
+
+function SampleCityPicker({
+  initial,
+  busy,
+  onLoad,
+  compact,
+}: {
+  initial: string;
+  busy: boolean;
+  onLoad: (city: string) => void;
+  compact?: boolean;
+}) {
+  const [city, setCity] = useState(initial);
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (city.trim()) onLoad(city.trim());
+      }}
+      className="flex flex-wrap items-center gap-2"
+    >
+      <label className="sr-only" htmlFor={compact ? "ow-city-compact" : "ow-city"}>City</label>
+      <div className="relative">
+        <MapPin className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+        <input
+          id={compact ? "ow-city-compact" : "ow-city"}
+          list="ow-cities"
+          value={city}
+          onChange={(e) => setCity(e.target.value)}
+          placeholder="Any city, e.g. Pune"
+          className={cn(
+            "rounded-lg border border-border bg-background pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20",
+            compact ? "h-7 w-44" : "h-9 w-56",
+          )}
+        />
+        <datalist id="ow-cities">
+          {SAMPLE_CITIES.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
+      </div>
+      <Button type="submit" size={compact ? "sm" : "default"} variant={compact ? "outline" : "default"} disabled={busy || !city.trim()}>
+        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Database className="size-3.5" />}
+        {compact ? "Show this city" : "Load sample data"}
+      </Button>
+    </form>
+  );
+}
+
 function LevelPill({ level }: { level: OutbreakLevel }) {
   const meta = LEVELS[level];
   const Icon = LEVEL_ICONS[level];
@@ -231,12 +285,12 @@ export default function OutbreakWatchPage() {
   );
   const selected = summary?.areas.find((a) => a.locality === selectedArea) || null;
 
-  const handleDemo = async (action: "demo" | "clear") => {
+  const handleDemo = async (action: "demo" | "clear", city?: string) => {
     if (!doctorId) return;
     setBusy(action);
     setNotice(null);
     try {
-      if (action === "demo") await loadOutbreakDemoData(doctorId);
+      if (action === "demo") await loadOutbreakDemoData(doctorId, city);
       else await clearOutbreakDemoData(doctorId);
       setSelectedArea(null);
       await refresh();
@@ -373,13 +427,13 @@ export default function OutbreakWatchPage() {
               for example &ldquo;I&apos;ve had fever and joint pain since Monday&rdquo; or &ldquo;bukhar aur badan
               dard hai&rdquo;. Add each patient&apos;s locality on their profile to place them on the map.
             </p>
-            <Button className="mt-5" onClick={() => handleDemo("demo")} disabled={busy !== null}>
-              {busy === "demo" ? <Loader2 className="size-3.5 animate-spin" /> : <Database className="size-3.5" />}
-              Load sample data for Hubli–Dharwad
-            </Button>
+            <div className="mt-5">
+              <SampleCityPicker initial="Hubli–Dharwad" busy={busy === "demo"} onLoad={(city) => handleDemo("demo", city)} />
+            </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              Five weeks of sample reports with a dengue cluster and a diarrhoea cluster. Clearly marked and
-              removable.
+              {busy === "demo"
+                ? "Finding the city's neighbourhoods on OpenStreetMap. The first time can take up to 30 seconds."
+                : "Five weeks of sample reports for that city's real neighbourhoods, with a dengue cluster and a diarrhoea cluster. Clearly marked and removable."}
             </p>
           </div>
           <HowItWorks />
@@ -391,13 +445,27 @@ export default function OutbreakWatchPage() {
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-border bg-muted/40 px-4 py-2.5 text-sm">
                 <span className="flex items-center gap-2 text-muted-foreground">
                   <Database className="size-4" aria-hidden />
-                  Showing {summary.demo_reports} sample reports
-                  {summary.call_reports > 0 && ` alongside ${summary.call_reports} from real calls`}.
+                  {busy === "demo"
+                    ? "Finding neighbourhoods… the first time for a city can take up to 30 seconds."
+                    : <>
+                        Showing {summary.demo_reports} sample reports
+                        {summary.demo_region && <> for <span className="font-medium text-foreground">{summary.demo_region}</span></>}
+                        {summary.call_reports > 0 && ` alongside ${summary.call_reports} from real calls`}.
+                      </>}
                 </span>
-                <Button variant="ghost" size="sm" onClick={() => handleDemo("clear")} disabled={busy !== null}>
-                  {busy === "clear" ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-                  Remove sample data
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <SampleCityPicker
+                    key={summary.demo_region || "none"}
+                    compact
+                    initial={summary.demo_region || ""}
+                    busy={busy === "demo"}
+                    onLoad={(city) => handleDemo("demo", city)}
+                  />
+                  <Button variant="ghost" size="sm" onClick={() => handleDemo("clear")} disabled={busy !== null}>
+                    {busy === "clear" ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                    Remove sample data
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -466,7 +534,9 @@ export default function OutbreakWatchPage() {
             <div className="grid gap-6 lg:grid-cols-5">
               <section className="overflow-hidden rounded-xl border border-border bg-card lg:col-span-3">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3">
-                  <h2 className="text-sm font-semibold">Where cases are, last {summary.window_days} days</h2>
+                  <h2 className="text-sm font-semibold">
+                    Where cases are{summary.demo_region && !summary.call_reports ? ` in ${summary.demo_region}` : ""}, last {summary.window_days} days
+                  </h2>
                   <div className="flex items-center gap-3 text-xs text-muted-foreground">
                     {(["alert", "watch", "normal"] as const).map((l) => (
                       <span key={l} className="flex items-center gap-1.5">

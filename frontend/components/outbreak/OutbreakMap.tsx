@@ -51,7 +51,8 @@ export default function OutbreakMap({ points, selected, onSelect }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
-  const fittedRef = useRef(false);
+  // Areas the map was last fitted to; refit when they change (e.g. another city).
+  const fittedKeyRef = useRef("");
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -68,7 +69,7 @@ export default function OutbreakMap({ points, selected, onSelect }: Props) {
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
-      fittedRef.current = false;
+      fittedKeyRef.current = "";
     };
   }, []);
 
@@ -82,22 +83,33 @@ export default function OutbreakMap({ points, selected, onSelect }: Props) {
     // Quiet areas first so hotspots are drawn on top.
     const ordered = [...points].sort((a, b) => a.cases - b.cases);
 
+    // Risk zones under every marker: red for alerts, amber for watch. Sized in
+    // metres so they cover the neighbourhood at any zoom; stacked rings fade
+    // from the centre outwards like a heatmap.
+    ordered
+      .filter((point) => point.level !== "normal" && point.cases > 0)
+      .forEach((point) => {
+        const zone = 600 + 1100 * Math.sqrt(point.cases / maxCases);
+        [1, 0.72, 0.45].forEach((scale) => {
+          L.circle([point.lat, point.lon], {
+            radius: zone * scale,
+            stroke: scale === 1,
+            color: LEVELS[point.level].color,
+            weight: 1,
+            opacity: 0.35,
+            dashArray: "4 4",
+            fillColor: LEVELS[point.level].color,
+            fillOpacity: point.level === "alert" ? 0.12 : 0.1,
+            interactive: false,
+          }).addTo(layer);
+        });
+      });
+
     ordered.forEach((point) => {
       const color = LEVELS[point.level].color;
       const isSelected = selected === point.locality;
       // Area of the circle tracks the case count.
       const radius = 10 + 26 * Math.sqrt(point.cases / maxCases);
-
-      if (point.cases > 0) {
-        // Soft halo so clusters read as heat at a glance.
-        L.circleMarker([point.lat, point.lon], {
-          radius: radius * 1.9,
-          stroke: false,
-          fillColor: color,
-          fillOpacity: point.level === "normal" ? 0.08 : 0.16,
-          interactive: false,
-        }).addTo(layer);
-      }
 
       if (point.level === "alert") {
         L.marker([point.lat, point.lon], {
@@ -133,9 +145,11 @@ export default function OutbreakMap({ points, selected, onSelect }: Props) {
       }
     });
 
-    if (!fittedRef.current && points.length > 1) {
-      map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number])), { padding: [48, 48] });
-      fittedRef.current = true;
+    const key = points.map((p) => p.locality).sort().join("|");
+    if (key && key !== fittedKeyRef.current) {
+      if (points.length === 1) map.setView([points[0].lat, points[0].lon], 13);
+      else map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number])), { padding: [56, 56] });
+      fittedKeyRef.current = key;
     }
   }, [points, selected, onSelect]);
 

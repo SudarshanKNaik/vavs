@@ -124,3 +124,36 @@ def test_finished_call_records_symptoms_once(db_conn):
     ).fetchall()
     assert len(rows) == 1 and "rash" in rows[0][0]
     assert ow.record_call_symptoms(log | {"id": str(uuid.uuid4())}, "none", []) is None
+
+
+def test_resolve_place_geocodes_areas_outside_hubli(monkeypatch):
+    monkeypatch.setattr(ow, "geocode_place", lambda q: {"latitude": 12.93, "longitude": 77.62})
+    assert ow.resolve_place("Koramangala, Bengaluru") == ("Koramangala", 12.93, 77.62)
+    # Built-in areas never hit the network.
+    monkeypatch.setattr(ow, "geocode_place", lambda q: pytest.fail("should not geocode"))
+    assert ow.resolve_place("Old Hubli")[0] == "Old Hubli"
+
+
+def test_demo_roles_put_dengue_neighbours_together_and_gastro_far_away():
+    areas = [("Hub", 0.0, 0.0), ("Far", 0.2, 0.2), ("Near1", 0.01, 0.0), ("Near2", 0.0, 0.02), ("Mid", 0.1, 0.0)]
+    names = [a[0] for a in ow._assign_demo_roles(areas)]
+    assert names[:4] == ["Hub", "Near1", "Far", "Near2"]
+
+
+def test_demo_data_for_another_city(client, monkeypatch):
+    areas = [(f"Area {i}", 18.5 + i * 0.01, 73.8 + (i % 3) * 0.01) for i in range(12)]
+    monkeypatch.setattr(ow, "city_areas", lambda city: ("Pune", areas))
+    doctor_id = f"outbreak-{uuid.uuid4().hex[:8]}"
+    res = client.post("/api/outbreak/demo-data", json={"doctor_id": doctor_id, "city": "pune"}).json()
+    assert res["region"] == "Pune" and res["inserted"] > 0
+
+    summary = client.get("/api/outbreak/summary", params={"doctor_id": doctor_id}).json()
+    assert summary["demo_region"] == "Pune"
+    assert {a["locality"] for a in summary["areas"]} <= {a[0] for a in areas}
+    assert any(s["level"] == "alert" for s in summary["signals"])
+
+
+def test_unknown_city_is_a_clear_error(client, monkeypatch):
+    monkeypatch.setattr(ow, "geocode_place", lambda q: None)
+    res = client.post("/api/outbreak/demo-data", json={"doctor_id": "x", "city": "Nowhereville"})
+    assert res.status_code == 422 and "Couldn't find" in res.json()["detail"]

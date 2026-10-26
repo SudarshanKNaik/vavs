@@ -20,7 +20,7 @@ uploaded      of range      book slot     doctor summary
 - **Lab report processing**: upload a PDF or a photo of a report, extract structured values, detect abnormal results and trigger workflows from them.
 - **Automated follow-ups**: a background scheduler retries the workflow when a call ends without a booking.
 - **Blood donation campaigns**: upload donor and NGO lists, match compatible and eligible donors, call them in batches, and view the results on a map.
-- **Outbreak Watch**: symptoms patients mention on AI calls (English, Hindi, Kannada) are grouped into syndromes by locality. Each area's last 7 days are tested against its previous 28 (Poisson), flagged areas appear on a map, and a dengue rise feeds a platelet demand forecast. Area-level reports can be emailed to a health officer.
+- **Outbreak Watch**: symptoms patients mention on AI calls (English, Hindi, Kannada) are grouped into syndromes by locality. Each area's last 7 days are tested against its previous 28 (Poisson), flagged areas appear as red/amber zones on a map of any city (localities outside the built-in Hubli–Dharwad list are geocoded with OpenStreetMap and cached), and a dengue rise feeds a platelet demand forecast. Area-level reports can be emailed to a health officer.
 - **Patient portal**: patients sign up, view their reports and appointments, book slots and join chat/video teleconsultations.
 - **Doctor dashboard**: patients, call logs with transcripts, appointments, availability, follow-ups and an audit log.
 - **Email**: OTP sign-up/login and report/notification delivery over SMTP.

@@ -4038,6 +4038,7 @@ async def list_blood_requests(doctor_id: str):
 
 class OutbreakDemoRequest(BaseModel):
     doctor_id: str
+    city: str | None = None
 
 
 class OutbreakBriefEmailRequest(BaseModel):
@@ -4061,8 +4062,10 @@ async def get_outbreak_summary(doctor_id: str):
 
 @router.post("/outbreak/demo-data")
 async def load_outbreak_demo_data(body: OutbreakDemoRequest):
-    inserted = await _run_db_call(outbreak_service.load_demo_data, body.doctor_id)
-    return {"inserted": inserted}
+    try:
+        return await _run_db_call(outbreak_service.load_demo_data, body.doctor_id, body.city)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.delete("/outbreak/demo-data")

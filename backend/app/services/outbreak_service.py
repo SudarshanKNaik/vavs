@@ -18,8 +18,12 @@ import logging
 import math
 import random
 import re
+import threading
 from datetime import date, datetime, time, timedelta, timezone
+from time import monotonic, sleep
 from typing import Any
+
+import httpx
 
 import app.services.postgres_service as db
 
@@ -205,6 +209,206 @@ def locate(locality: str | None) -> tuple[str, float | None, float | None] | Non
 
 
 # ---------------------------------------------------------------------------
+# Places outside Hubli-Dharwad (OpenStreetMap, cached in place_geocodes)
+# ---------------------------------------------------------------------------
+
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+# Overpass servers, tried in order (the main one is often overloaded).
+_OVERPASS_URLS = (
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+)
+# Both services require an identifying user agent.
+_OSM_HEADERS = {"User-Agent": "CareSync-AI/1.0 (outbreak-watch)", "Accept-Language": "en"}
+HUBLI_DHARWAD = "Hubli–Dharwad"
+_HUBLI_KEYS = {"hubli", "hubballi", "dharwad", "hubli-dharwad", "hubli dharwad", "hubballi-dharwad", "hubli–dharwad"}
+# Search for neighbourhoods within this distance (degrees, ~13 km) of the city centre.
+_CITY_RADIUS_DEG = 0.12
+DEMO_AREA_COUNT = 12
+
+# Well-known neighbourhoods of major cities, so sample data doesn't depend on
+# Overpass. Coordinates still come from Nominatim (and are cached).
+CITY_NEIGHBOURHOODS: dict[str, list[str]] = {
+    "Bengaluru": ["Koramangala", "Indiranagar", "Jayanagar", "Whitefield", "Malleshwaram", "Rajajinagar",
+                  "Hebbal", "BTM Layout", "Yelahanka", "Marathahalli", "Banashankari", "HSR Layout"],
+    "Mumbai": ["Dharavi", "Kurla", "Andheri", "Bandra", "Dadar", "Colaba", "Malad", "Borivali",
+               "Ghatkopar", "Chembur", "Goregaon", "Worli"],
+    "Delhi": ["Karol Bagh", "Lajpat Nagar", "Rohini", "Dwarka", "Saket", "Mayur Vihar", "Chandni Chowk",
+              "Janakpuri", "Shahdara", "Vasant Kunj", "Pitampura", "Okhla"],
+    "Pune": ["Kothrud", "Hadapsar", "Aundh", "Katraj", "Shivajinagar", "Viman Nagar", "Kharadi", "Wakad",
+             "Baner", "Swargate", "Yerawada", "Kondhwa"],
+    "Hyderabad": ["Secunderabad", "Banjara Hills", "Gachibowli", "Kukatpally", "Charminar", "Ameerpet",
+                  "Dilsukhnagar", "Begumpet", "Madhapur", "Mehdipatnam", "LB Nagar", "Uppal"],
+    "Chennai": ["T. Nagar", "Adyar", "Mylapore", "Anna Nagar", "Velachery", "Tambaram", "Royapuram",
+                "Egmore", "Guindy", "Perambur", "Porur", "Tondiarpet"],
+    "Kolkata": ["Salt Lake", "Park Street", "Ballygunge", "Behala", "Dum Dum", "Garia", "Tollygunge",
+                "Shyambazar", "Jadavpur", "New Town", "Sealdah", "Howrah"],
+    "Mysuru": ["Gokulam", "Kuvempunagar", "Vijayanagar", "Saraswathipuram", "Jayalakshmipuram",
+               "Bannimantap", "Nazarbad", "Lashkar Mohalla", "Siddhartha Layout", "Ramakrishnanagar",
+               "Hinkal", "Hebbal"],
+    "Belagavi": ["Tilakwadi", "Shahapur", "Camp", "Sadashiv Nagar", "Hindwadi", "Vadgaon", "Angol",
+                 "Mahantesh Nagar", "Shivaji Nagar", "Bhagya Nagar", "Azam Nagar", "Khasbag"],
+}
+_CITY_ALIASES = {
+    "bangalore": "Bengaluru", "bengaluru": "Bengaluru", "mumbai": "Mumbai", "bombay": "Mumbai",
+    "delhi": "Delhi", "new delhi": "Delhi", "pune": "Pune", "poona": "Pune", "hyderabad": "Hyderabad",
+    "chennai": "Chennai", "madras": "Chennai", "kolkata": "Kolkata", "calcutta": "Kolkata",
+    "mysuru": "Mysuru", "mysore": "Mysuru", "belagavi": "Belagavi", "belgaum": "Belagavi",
+}
+
+_osm_lock = threading.Lock()
+_osm_last_request = 0.0
+
+
+def _osm_get(url: str, params: dict[str, Any], timeout: float) -> Any:
+    """GET with Nominatim's usage policy applied: at most one request a second."""
+    global _osm_last_request
+    with _osm_lock:
+        wait = 1.1 - (monotonic() - _osm_last_request)
+        if wait > 0:
+            sleep(wait)
+        try:
+            response = httpx.get(url, params=params, headers=_OSM_HEADERS, timeout=timeout)
+        finally:
+            _osm_last_request = monotonic()
+    response.raise_for_status()
+    return response.json()
+
+
+def _place_key(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def geocode_place(query: str) -> dict[str, Any] | None:
+    """Coordinates and bounding box of a place, from the cache or Nominatim. None if not found."""
+    key = _place_key(query)
+    if not key:
+        return None
+    cached = db.get_place_geocode(key)
+    if cached:
+        return cached if cached.get("latitude") is not None else None
+
+    try:
+        rows = []
+        for extra in ({"countrycodes": "in"}, {}):  # prefer India, then anywhere
+            rows = _osm_get(_NOMINATIM_URL, {"q": query, "format": "jsonv2", "limit": 1, **extra}, timeout=8)
+            if rows:
+                break
+    except Exception as exc:
+        # Network trouble: don't cache, so the next call tries again.
+        logger.warning("Geocoding %r failed: %s", query, exc)
+        return None
+
+    place: dict[str, Any] = {"query": key}
+    if rows:
+        top = rows[0]
+        south, north, west, east = (float(v) for v in top.get("boundingbox") or [0, 0, 0, 0])
+        place.update(
+            name=top.get("name") or query.strip().title(),
+            latitude=float(top["lat"]),
+            longitude=float(top["lon"]),
+            south=south, north=north, west=west, east=east,
+        )
+    db.save_place_geocode(place)
+    return place if rows else None
+
+
+def resolve_place(locality: str | None) -> tuple[str, float | None, float | None] | None:
+    """Built-in Hubli-Dharwad areas first, then any other place via OpenStreetMap."""
+    place = locate(locality)
+    if not place or place[1] is not None:
+        return place
+    hit = geocode_place(locality or "")
+    name = (locality or "").split(",")[0].strip().title()
+    return (name, float(hit["latitude"]), float(hit["longitude"])) if hit else (name, None, None)
+
+
+def _spread(points: list[tuple[str, float, float]], centre: tuple[float, float], count: int):
+    """Pick `count` points spread across the city, starting nearest the centre."""
+    def dist(a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - b[0]) ** 2 + ((a[1] - b[1]) * math.cos(math.radians(a[0]))) ** 2
+
+    remaining = sorted(points, key=lambda p: dist((p[1], p[2]), centre))
+    chosen = [remaining.pop(0)]
+    while remaining and len(chosen) < count:
+        best = max(remaining, key=lambda p: min(dist((p[1], p[2]), (c[1], c[2])) for c in chosen))
+        remaining.remove(best)
+        chosen.append(best)
+    return chosen
+
+
+def _compass_areas(city: str, lat: float, lon: float) -> list[tuple[str, float, float]]:
+    """Fallback when OpenStreetMap lists no neighbourhoods: named zones around the centre."""
+    d = 0.035
+    zones = [("Central", 0, 0), ("North", d, 0), ("South", -d, 0), ("East", 0, d), ("West", 0, -d),
+             ("North-East", d, d), ("North-West", d, -d), ("South-East", -d, d), ("South-West", -d, -d)]
+    return [(f"{label} {city}", lat + dlat, lon + dlon) for label, dlat, dlon in zones]
+
+
+def city_areas(city: str) -> tuple[str, list[tuple[str, float, float]]]:
+    """A city's display name and up to DEMO_AREA_COUNT real neighbourhoods with coordinates."""
+    if _place_key(city) in _HUBLI_KEYS:
+        return HUBLI_DHARWAD, [locate(name) for name, *_ in _DEMO_PATTERN]
+
+    place = geocode_place(city)
+    if not place:
+        raise ValueError(f"Couldn't find “{city.strip()}” on the map. Try the city's full name.")
+    name, lat, lon = place["name"], float(place["latitude"]), float(place["longitude"])
+    if place.get("areas"):
+        return name, [(a["name"], a["latitude"], a["longitude"]) for a in place["areas"]]
+
+    preset = _CITY_ALIASES.get(_place_key(city))
+    if preset:
+        name = preset
+        hits = []
+        for area in CITY_NEIGHBOURHOODS[preset]:
+            hit = geocode_place(f"{area}, {preset}")
+            if hit:
+                hits.append((area, float(hit["latitude"]), float(hit["longitude"])))
+        # Drop a match that landed in some other town. Measured from the middle
+        # of the neighbourhoods, since a city name can resolve to its district.
+        if hits:
+            mid_lat = sorted(h[1] for h in hits)[len(hits) // 2]
+            mid_lon = sorted(h[2] for h in hits)[len(hits) // 2]
+            hits = [h for h in hits if abs(h[1] - mid_lat) < 0.25 and abs(h[2] - mid_lon) < 0.25]
+        areas = hits
+        if len(areas) >= 6:
+            db.save_place_geocode(
+                {**place, "name": name, "areas": [{"name": a[0], "latitude": a[1], "longitude": a[2]} for a in areas]}
+            )
+            return name, areas
+
+    south, north = max(float(place["south"]), lat - _CITY_RADIUS_DEG), min(float(place["north"]), lat + _CITY_RADIUS_DEG)
+    west, east = max(float(place["west"]), lon - _CITY_RADIUS_DEG), min(float(place["east"]), lon + _CITY_RADIUS_DEG)
+    query = (
+        f'[out:json][timeout:25];node["place"~"^(suburb|neighbourhood|quarter)$"]["name"]'
+        f"({south},{west},{north},{east});out 200;"
+    )
+    found: dict[str, tuple[str, float, float]] = {}
+    for url in _OVERPASS_URLS:
+        try:
+            elements = _osm_get(url, {"data": query}, timeout=10).get("elements", [])
+        except Exception as exc:
+            logger.warning("Neighbourhood lookup for %r on %s failed: %s", city, url, exc)
+            continue
+        for el in elements:
+            tags = el.get("tags", {})
+            area_name = (tags.get("name:en") or tags.get("name") or "").strip()
+            if area_name and area_name.lower() not in found:
+                found[area_name.lower()] = (area_name, float(el["lat"]), float(el["lon"]))
+        break
+    else:
+        return name, _compass_areas(name, lat, lon)  # not cached, so a later try can do better
+
+    areas = _spread(list(found.values()), (lat, lon), DEMO_AREA_COUNT) if len(found) >= 6 else _compass_areas(name, lat, lon)
+    db.save_place_geocode(
+        {**place, "areas": [{"name": a[0], "latitude": a[1], "longitude": a[2]} for a in areas]}
+    )
+    return name, areas
+
+
+# ---------------------------------------------------------------------------
 # Ingestion
 # ---------------------------------------------------------------------------
 
@@ -223,7 +427,7 @@ def record_call_symptoms(call_log: dict[str, Any] | None, reported: str, transcr
     doctor_id = patient.get("doctor_id") or call_log.get("doctor_id")
     if not doctor_id:
         return None
-    place = locate(patient.get("locality"))
+    place = resolve_place(patient.get("locality"))
     return db.upsert_call_symptom_report(
         {
             "doctor_id": str(doctor_id),
@@ -392,6 +596,8 @@ def get_outbreak_summary(doctor_id: str, donor_doctor_ids: list[str]) -> dict[st
     summary["calls_analysed_30d"] = db.count_completed_calls(doctor_id, month_ago)
     summary["demo_reports"] = sum(1 for r in reports if r.get("source") == "demo")
     summary["call_reports"] = len(reports) - summary["demo_reports"]
+    regions = [r["region"] for r in reports if r.get("source") == "demo" and r.get("region")]
+    summary["demo_region"] = max(set(regions), key=regions.count) if regions else None
     summary["platelets"]["eligible_donors"] = db.count_eligible_donors(donor_doctor_ids)
     summary["brief"] = build_brief(summary)
     return summary
@@ -468,22 +674,40 @@ def _poisson_draw(rng: random.Random, lam: float) -> int:
         k += 1
 
 
-def load_demo_data(doctor_id: str) -> int:
-    """Replace this doctor's demo reports with five weeks of sample data containing clusters."""
+def _assign_demo_roles(areas: list[tuple[str, float, float]]) -> list[tuple[str, float, float]]:
+    """
+    Order a city's areas to match _DEMO_PATTERN: the main dengue cluster near the
+    centre, its two dengue neighbours next to it, the diarrhoea cluster far away.
+    """
+    def dist(a, b):
+        return (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
+
+    hub, rest = areas[0], list(areas[1:])
+    rest.sort(key=lambda a: dist(a, hub))
+    near, far = rest[:2], rest[-1:]
+    others = [a for a in rest if a not in near and a not in far]
+    # Pattern order: main dengue, dengue neighbour, gastro, dengue watch, background...
+    return [hub, near[0], far[0], near[1], *others]
+
+
+def load_demo_data(doctor_id: str, city: str | None = None) -> dict[str, Any]:
+    """Replace this doctor's demo reports with five weeks of sample data for a city."""
+    region, areas = city_areas(city or HUBLI_DHARWAD)
+    if region != HUBLI_DHARWAD:
+        areas = _assign_demo_roles(areas)
     db.delete_demo_symptom_reports(doctor_id)
-    rng = random.Random(f"outbreak-demo:{doctor_id}")
+    rng = random.Random(f"outbreak-demo:{doctor_id}:{region}")
     today = datetime.now(timezone.utc).astimezone(db.CLINIC_TZ).date()
     rows = []
     for days_ago in range(HISTORY_DAYS - 1, -1, -1):
         day = today - timedelta(days=days_ago)
         in_window = days_ago < WINDOW_DAYS
-        for locality, syndrome, background, cluster in _DEMO_PATTERN:
+        for (_, syndrome, background, cluster), (name, lat, lon) in zip(_DEMO_PATTERN, areas):
             if cluster and in_window:
                 count = cluster[WINDOW_DAYS - 1 - days_ago]
             else:
                 count = _poisson_draw(rng, background)
             for _ in range(count):
-                name, lat, lon = locate(locality)
                 reported = datetime.combine(day, time(rng.randint(9, 18), rng.randint(0, 59)), tzinfo=db.CLINIC_TZ)
                 if reported > datetime.now(timezone.utc):
                     reported = datetime.now(timezone.utc) - timedelta(minutes=rng.randint(5, 120))
@@ -491,6 +715,7 @@ def load_demo_data(doctor_id: str) -> int:
                     {
                         "doctor_id": doctor_id,
                         "source": "demo",
+                        "region": region,
                         "locality": name,
                         "latitude": lat,
                         "longitude": lon,
@@ -499,7 +724,7 @@ def load_demo_data(doctor_id: str) -> int:
                         "reported_at": reported,
                     }
                 )
-    return db.insert_symptom_reports(rows)
+    return {"inserted": db.insert_symptom_reports(rows), "region": region}
 
 
 def clear_demo_data(doctor_id: str) -> int:

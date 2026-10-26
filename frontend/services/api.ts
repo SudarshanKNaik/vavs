@@ -1937,6 +1937,7 @@ export interface OutbreakSummary {
   calls_analysed_30d: number;
   demo_reports: number;
   call_reports: number;
+  demo_region: string | null;
   brief: string;
 }
 
@@ -1953,11 +1954,11 @@ export function getOutbreakSummary(doctorId: string) {
   return outbreakRequest<OutbreakSummary>(`/summary?doctor_id=${encodeURIComponent(doctorId)}`);
 }
 
-export function loadOutbreakDemoData(doctorId: string) {
-  return outbreakRequest<{ inserted: number }>("/demo-data", {
+export function loadOutbreakDemoData(doctorId: string, city?: string) {
+  return outbreakRequest<{ inserted: number; region: string }>("/demo-data", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doctor_id: doctorId }),
+    body: JSON.stringify({ doctor_id: doctorId, city: city || null }),
   });
 }
 

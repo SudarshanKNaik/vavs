@@ -3603,7 +3603,7 @@ def list_blood_requests(doctor_id: str, limit: int = 50) -> list[dict[str, Any]]
 
 _SYMPTOM_REPORT_COLUMNS = (
     "doctor_id", "patient_id", "call_log_id", "source", "locality",
-    "latitude", "longitude", "symptoms", "syndrome", "reported_at",
+    "latitude", "longitude", "symptoms", "syndrome", "reported_at", "region",
 )
 
 
@@ -3655,7 +3655,7 @@ def list_symptom_reports(doctor_id: str, since: datetime) -> list[dict[str, Any]
     with _cursor() as cur:
         cur.execute(
             """
-            SELECT locality, latitude, longitude, symptoms, syndrome, source, reported_at
+            SELECT locality, latitude, longitude, symptoms, syndrome, source, region, reported_at
             FROM symptom_reports
             WHERE doctor_id = %s AND reported_at >= %s
             ORDER BY reported_at
@@ -3698,3 +3698,24 @@ def count_eligible_donors(doctor_ids: list[str]) -> int:
             (doctor_ids,),
         )
         return int(cur.fetchone()["n"])
+
+
+def get_place_geocode(query: str) -> dict[str, Any] | None:
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM place_geocodes WHERE query = %s", (query,))
+        return cur.fetchone()
+
+
+def save_place_geocode(payload: dict[str, Any]) -> None:
+    columns = ["query", "name", "latitude", "longitude", "south", "north", "west", "east", "areas"]
+    with _cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO place_geocodes ({", ".join(columns)})
+            VALUES ({", ".join(["%s"] * len(columns))})
+            ON CONFLICT (query) DO UPDATE SET
+                {", ".join(f"{c} = EXCLUDED.{c}" for c in columns[1:])},
+                created_at = now()
+            """,
+            [_to_db_value(payload.get(c)) for c in columns],
+        )
