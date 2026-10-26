@@ -1330,7 +1330,7 @@ async def update_appointment(appointment_id: str, body: AppointmentDoctorUpdateR
     try:
         if payload.get("status") == "cancelled":
             return db.cancel_appointment(
-                appointment_id, cancel_note="Cancelled by doctor"
+                appointment_id, cancel_note="Cancelled by doctor", cancelled_by="doctor"
             )
         return db.update_appointment(appointment_id, payload)
     except RuntimeError as exc:

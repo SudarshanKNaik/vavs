@@ -1617,7 +1617,7 @@ def cancel_appointment_for_patient_portal(
     if reason:
         cancel_note = f"{cancel_note}: {reason.strip()}"
 
-    return cancel_appointment(appointment_id, cancel_note=cancel_note)
+    return cancel_appointment(appointment_id, cancel_note=cancel_note, cancelled_by="patient")
 
 
 def cancel_doctor_slots(
@@ -1667,6 +1667,8 @@ def cancel_doctor_slots(
                     UPDATE appointments
                     SET status = 'cancelled',
                         notes = trim(both E'\n' from coalesce(notes, '') || E'\n' || %s),
+                        cancelled_by = 'doctor',
+                        cancelled_at = now(),
                         updated_at = now()
                     WHERE slot_id = ANY(%s::uuid[])
                       AND status IN ('booked', 'confirmed')
@@ -1789,7 +1791,12 @@ def reschedule_appointment_for_patient_portal(
     if not new_appointment:
         raise RuntimeError("Could not book the selected slot")
 
-    cancel_appointment(current["id"], cancel_note=f"Rescheduled to slot {new_slot_id}")
+    cancel_appointment(
+        current["id"],
+        cancel_note=f"Rescheduled to slot {new_slot_id}",
+        cancelled_by="patient",
+        rescheduled_to_appointment_id=str(new_appointment["id"]),
+    )
     doctor = get_doctor(str(new_appointment["doctor_id"]))
 
     with _cursor() as cur:
