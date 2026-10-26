@@ -90,6 +90,11 @@ def _follow_up_reason(
 ) -> str:
     if patient_confirmed and not confirmed_date:
         return "Patient confirmed but no appointment date captured"
+    if patient_confirmed and confirmed_date:
+        return (
+            f"Patient chose {confirmed_date} but it could not be booked "
+            "(taken by another caller or not on the schedule)"
+        )
     if not patient_confirmed:
         return f"No booking confirmation. call_outcome={call_outcome or 'unknown'}"
     return "Call completed without successful booking"
@@ -125,19 +130,33 @@ def _enqueue_follow_up_if_needed(
     if not call_log:
         return None
 
-    if not _is_follow_up_needed(
-        patient_confirmed=patient_confirmed,
-        confirmed_date=confirmed_date,
-        call_outcome=call_outcome,
-    ):
-        return None
-
     call_log_id = str(call_log.get("id") or "").strip()
     if not call_log_id:
         return None
 
     patient_id = str(call_log.get("patient_id") or "").strip()
-    doctor_id = str(call_log.get("doctor_id") or "").strip()
+    doctor_id = str(_resolve_doctor_id_for_call_log(call_log) or "").strip()
+
+    if not _is_follow_up_needed(
+        patient_confirmed=patient_confirmed,
+        confirmed_date=confirmed_date,
+        call_outcome=call_outcome,
+    ):
+        # The patient picked a time, but that only counts if it was booked:
+        # with simultaneous calls another caller can win the same slot, and the
+        # patient must not be left believing they have an appointment.
+        try:
+            booked = bool(
+                patient_id
+                and doctor_id
+                and db.has_active_appointment_for_patient_doctor(patient_id, doctor_id)
+            )
+        except Exception as exc:
+            logger.warning("Follow-up booking check failed: %s", exc)
+            booked = True  # can't tell; don't risk a duplicate call
+        if booked:
+            return None
+
     if patient_id and doctor_id:
         try:
             if db.has_active_appointment_for_patient_doctor(patient_id, doctor_id):
@@ -2049,15 +2068,16 @@ def _resolve_time(raw: str) -> str:
             hour += 12
         return f"{hour:02d}:{minute}"
 
-    # 12-hour format: "2:15 PM", "2:15pm", "10:30 AM"
-    match = re.match(r"(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)", raw)
+    # 12-hour format: "2:15 PM", "2:15pm", "10:30 AM", "11 AM", "3pm", "11.30 a.m."
+    # (Without the minutes-optional form, "11 AM" fell through to the 09:00 default.)
+    match = re.match(r"^(\d{1,2})(?:[:.](\d{2}))?\s*([ap])\.?\s*m\.?$", raw, re.IGNORECASE)
     if match:
         hour = int(match.group(1))
-        minute = match.group(2)
+        minute = match.group(2) or "00"
         ampm = match.group(3).lower()
-        if ampm == "pm" and hour != 12:
+        if ampm == "p" and hour != 12:
             hour += 12
-        elif ampm == "am" and hour == 12:
+        elif ampm == "a" and hour == 12:
             hour = 0
         return f"{hour:02d}:{minute}"
 
@@ -3012,6 +3032,150 @@ async def lab_event(body: LabEventRequest):
         "patient_id": body.patient_id,
         "workflows_executed": len(matched_results),
         "results": matched_results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs live tools (called by the agent DURING a call)
+# ---------------------------------------------------------------------------
+# Configure these as two webhook "server tools" on the agent, both sending
+# header X-Tool-Secret: <ELEVENLABS_TOOL_SECRET> and {{call_log_id}} in the body.
+# They answer from the live database, so the agent never offers a time another
+# caller has just taken, and a held time can't be booked by a parallel call.
+
+
+class AgentAvailableTimesRequest(BaseModel):
+    call_log_id: str
+    date: str = Field(min_length=1, max_length=40)
+
+
+class AgentHoldSlotRequest(BaseModel):
+    call_log_id: str
+    date: str = Field(min_length=1, max_length=40)
+    time: str = Field(min_length=1, max_length=20)
+
+
+def _check_agent_tool_secret(request: Request) -> None:
+    expected = settings.elevenlabs_tool_secret.strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="ELEVENLABS_TOOL_SECRET is not configured; agent tools are disabled",
+        )
+    provided = request.headers.get("x-tool-secret", "")
+    if not secrets.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="Invalid tool secret")
+
+
+def _call_context_for_tool(call_log_id: str) -> tuple[str, str]:
+    call_log = db.get_call_log(call_log_id)
+    if not call_log:
+        raise HTTPException(status_code=404, detail="Unknown call_log_id")
+    doctor_id = _resolve_doctor_id_for_call_log(call_log)
+    patient_id = call_log.get("patient_id")
+    if not doctor_id or not patient_id:
+        raise HTTPException(status_code=404, detail="Call has no doctor or patient")
+    return str(doctor_id), str(patient_id)
+
+
+def _parse_tool_date(raw: str):
+    from datetime import date as date_cls
+
+    resolved = _resolve_date(raw)
+    try:
+        return date_cls.fromisoformat(resolved) if resolved else None
+    except ValueError:
+        return None
+
+
+def _spoken_times(slots: list[dict[str, Any]]) -> list[str]:
+    out = []
+    for slot in slots:
+        start = db._parse_iso_datetime(slot.get("slot_start"))
+        if start:
+            local = start.astimezone(db.CLINIC_TZ)
+            out.append(f"{local.hour % 12 or 12}:{local.strftime('%M %p')}")
+    return out
+
+
+@router.post("/elevenlabs/tools/available-times")
+async def agent_tool_available_times(body: AgentAvailableTimesRequest, request: Request):
+    """Agent asks: which times are free on the date the patient chose?"""
+    _check_agent_tool_secret(request)
+    doctor_id, _ = await run_in_threadpool(_call_context_for_tool, body.call_log_id)
+
+    day = _parse_tool_date(body.date)
+    if not day:
+        return {"available": False, "message": f"I couldn't understand the date '{body.date}'. Please ask the patient for the day again."}
+
+    slots = await _run_db_call(db.get_available_slots_on_date, doctor_id, day)
+    times = _spoken_times(slots)
+    spoken_date = db._speech_date(day)
+    if times:
+        return {
+            "available": True,
+            "date": day.isoformat(),
+            "spoken_date": spoken_date,
+            "times": times,
+            "message": f"On {spoken_date} the open times are: {', '.join(times)}.",
+        }
+
+    upcoming = await _run_db_call(db.get_available_slot_options, doctor_id, 60)
+    return {
+        "available": False,
+        "date": day.isoformat(),
+        "spoken_date": spoken_date,
+        "times": [],
+        "message": (
+            f"There are no open times on {spoken_date}. "
+            f"Days with openings: {db.format_available_dates_for_speech(upcoming)}."
+        ),
+    }
+
+
+@router.post("/elevenlabs/tools/hold-slot")
+async def agent_tool_hold_slot(body: AgentHoldSlotRequest, request: Request):
+    """Agent says: the patient picked this date and time, hold it for them.
+
+    The hold lasts 30 minutes; the post-call booking turns it into an
+    appointment. Call this before telling the patient the time is booked.
+    """
+    _check_agent_tool_secret(request)
+    doctor_id, patient_id = await run_in_threadpool(_call_context_for_tool, body.call_log_id)
+
+    day = _parse_tool_date(body.date)
+    if not day:
+        return {"held": False, "message": f"I couldn't understand the date '{body.date}'. Please confirm the day with the patient."}
+    try:
+        hh, mm = _resolve_time(body.time).split(":")
+        from datetime import time as time_cls
+
+        local_time = time_cls(int(hh), int(mm))
+    except (ValueError, TypeError):
+        return {"held": False, "message": f"I couldn't understand the time '{body.time}'. Please confirm the time with the patient."}
+
+    result = await _run_db_call(db.hold_slot_for_call, doctor_id, patient_id, day, local_time)
+    spoken = f"{db._speech_date(day)} at {local_time.hour % 12 or 12}:{local_time.strftime('%M')} {'AM' if local_time.hour < 12 else 'PM'}"
+    if result["held"]:
+        return {
+            "held": True,
+            "confirmed_date": day.isoformat(),
+            "confirmed_time": local_time.strftime("%H:%M"),
+            "message": f"{spoken} is now held for the patient. Confirm it with them.",
+        }
+
+    alternatives = _spoken_times(result.get("alternatives") or [])
+    why = (
+        "was just taken by another patient"
+        if result.get("reason") == "taken"
+        else "isn't one of the doctor's appointment times"
+    )
+    return {
+        "held": False,
+        "message": (
+            f"{spoken} {why}. "
+            + (f"Still open that day: {', '.join(alternatives)}." if alternatives else "Nothing else is open that day; offer another day.")
+        ),
     }
 
 

@@ -2571,8 +2571,11 @@ def hold_slot_for_call(
         )
         slot = cur.fetchone()
 
+    on_schedule = bool(
+        slot and start_utc > datetime.now(timezone.utc) and _is_inside_working_hours(start_utc)
+    )
     held = None
-    if slot and start_utc > datetime.now(timezone.utc) and _is_inside_working_hours(start_utc):
+    if on_schedule:
         held = reserve_slot(slot_id=str(slot["id"]), patient_id=patient_id, hold_minutes=hold_minutes)
 
     if held:
@@ -2590,7 +2593,13 @@ def hold_slot_for_call(
             )
         return {"held": True, "slot": held}
 
-    return {"held": False, "alternatives": get_available_slots_on_date(doctor_id, day)}
+    return {
+        "held": False,
+        # "taken": a real slot someone else holds or booked (e.g. a parallel call);
+        # "not_on_schedule": the doctor doesn't offer that time at all.
+        "reason": "taken" if on_schedule else "not_on_schedule",
+        "alternatives": get_available_slots_on_date(doctor_id, day),
+    }
 
 
 def _speech_time(local_dt: datetime) -> str:
@@ -3056,6 +3065,17 @@ def list_campaign_eligible_donors(
             WHERE d.doctor_id = c.doctor_id
               AND UPPER(d.blood_type) = ANY(%s::text[])
               AND a.id IS NULL
+              -- Not while another request is calling them, and not if they've
+              -- already agreed to donate for another request recently.
+              AND NOT EXISTS (
+                    SELECT 1 FROM blood_campaign_donor_attempts o
+                    WHERE o.donor_id = d.id
+                      AND o.campaign_id <> c.id
+                      AND (
+                            o.status IN ('queued', 'active')
+                         OR (o.status = 'accepted' AND o.updated_at > now() - INTERVAL '90 days')
+                      )
+              )
               AND (
                     CASE
                         WHEN LOWER(d.gender) IN ('male', 'm') THEN d.last_donated_date + INTERVAL '90 days'
