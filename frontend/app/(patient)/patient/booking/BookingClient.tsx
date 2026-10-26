@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocalAuth } from "@/lib/local-auth";
 import {
@@ -28,6 +28,7 @@ function formatDateTime(value?: string | null) {
 export default function BookingClient() {
   const { user, isAuthenticated, isLoading } = useLocalAuth();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const authUserId = user?.sub ?? "";
   const appointmentId = searchParams.get("appointmentId") || "";
 
@@ -115,7 +116,10 @@ export default function BookingClient() {
           new_slot_id: slotId,
           consultation_type: consultationType,
         });
-        setStatus({ type: "success", text: "Appointment rescheduled successfully." });
+        // The old appointment is now cancelled, so this page's appointmentId is
+        // stale; go back to the portal, which shows the new time.
+        router.push("/patient?updated=rescheduled");
+        return;
       } else {
         await bookPatientPortalSlot(slotId, {
           auth_user_id: authUserId,
@@ -131,7 +135,7 @@ export default function BookingClient() {
     } finally {
       setBookingSlotId(null);
     }
-  }, [appointmentId, authUserId, consultationType]);
+  }, [appointmentId, authUserId, consultationType, router]);
 
   if (isLoading || loading) {
     return (

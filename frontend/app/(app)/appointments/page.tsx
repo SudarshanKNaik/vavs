@@ -10,6 +10,7 @@ import {
 } from "@/services/api";
 
 import { cn } from "@/lib/utils";
+import { formatSlotTime, timeAgo, useLiveRefresh } from "@/components/app/appointments-overview";
 import {
   Calendar,
   CheckCircle2,
@@ -49,6 +50,18 @@ export default function AppointmentsPage() {
   useEffect(() => {
     fetchAppointments();
   }, [fetchAppointments]);
+
+  // Pick up patient cancels/reschedules without a manual reload.
+  const refreshQuietly = useCallback(async () => {
+    if (!doctorId) return;
+    try {
+      const data = await listDoctorAppointments(doctorId);
+      setAppointments(Array.isArray(data) ? data : []);
+    } catch {
+      // keep what's shown
+    }
+  }, [doctorId]);
+  useLiveRefresh(refreshQuietly);
 
   const handleAppointmentUpdate = useCallback(
     async (
@@ -136,6 +149,14 @@ export default function AppointmentsPage() {
                       <span className="text-xs text-muted-foreground">
                         {apt.consultation_type}
                       </span>
+                      {apt.status === "cancelled" && apt.cancelled_by && (
+                        <span className="text-xs text-muted-foreground">
+                          {apt.rescheduled_to_slot_start
+                            ? `Rescheduled by patient → ${formatSlotTime(apt.rescheduled_to_slot_start)}`
+                            : `Cancelled by ${apt.cancelled_by === "doctor" ? "you" : apt.cancelled_by}`}
+                          {apt.cancelled_at ? ` · ${timeAgo(apt.cancelled_at)}` : ""}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
                       <span>

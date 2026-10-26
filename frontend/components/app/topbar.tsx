@@ -19,7 +19,8 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { listPatients, listWorkflows, listCallLogs } from "@/services/api";
+import { listPatients, listWorkflows, listCallLogs, listDoctorAppointmentActivity } from "@/services/api";
+import { describeActivity, useLiveRefresh } from "@/components/app/appointments-overview";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 
@@ -53,7 +54,8 @@ export function Topbar() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loadingNotifs, setLoadingNotifs] = useState(false);
-  const [notifRead, setNotifRead] = useState(false);
+  // Red dot = an appointment change newer than when the bell was last opened.
+  const [notifRead, setNotifRead] = useState(true);
 
   const searchRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -199,8 +201,22 @@ export function Topbar() {
   const fetchNotifications = useCallback(async () => {
     setLoadingNotifs(true);
     try {
-      const logs = await listCallLogs(undefined, doctorId);
-      const items = (Array.isArray(logs) ? logs : []).slice(0, 20).map((cl: any) => ({
+      const [logs, activity] = await Promise.all([
+        listCallLogs(undefined, doctorId).catch(() => []),
+        doctorId ? listDoctorAppointmentActivity(doctorId).catch(() => []) : Promise.resolve([]),
+      ]);
+      const appointmentItems = activity.map((a) => {
+        const d = describeActivity(a);
+        return {
+          id: `appt-${a.kind}-${a.appointment_id}`,
+          type: a.kind === "booked" ? "success" : a.kind === "rescheduled" ? "warning" : "error",
+          title: a.kind === "booked" ? "Appointment booked" : a.kind === "rescheduled" ? "Appointment rescheduled" : "Appointment cancelled",
+          message: d.text,
+          time: a.happened_at,
+          href: "/appointments",
+        };
+      });
+      const callItems = (Array.isArray(logs) ? logs : []).slice(0, 20).map((cl: any) => ({
         id: cl.id,
         type: cl.status === "failed" ? "error" : cl.status === "completed" ? "success" : "info",
         title:
@@ -214,18 +230,49 @@ export function Topbar() {
         time: cl.created_at,
         href: "/calls",
       }));
-      setNotifications(items);
+      setNotifications(
+        [...appointmentItems, ...callItems]
+          .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+          .slice(0, 25),
+      );
     } catch {
       setNotifications([]);
     } finally {
       setLoadingNotifs(false);
     }
-  }, []);
+  }, [doctorId]);
+
+  // Poll appointment changes so the dot appears without opening the bell.
+  const checkForNewActivity = useCallback(async () => {
+    if (!doctorId) return;
+    try {
+      const activity = await listDoctorAppointmentActivity(doctorId, 2);
+      let lastSeen = 0;
+      try {
+        lastSeen = Number(window.localStorage.getItem(`caresync_notif_seen:${doctorId}`) || 0);
+      } catch {
+        // storage unavailable
+      }
+      if (activity.some((a) => new Date(a.happened_at).getTime() > lastSeen)) setNotifRead(false);
+    } catch {
+      // ignore; the bell still works on click
+    }
+  }, [doctorId]);
+
+  useEffect(() => {
+    checkForNewActivity();
+  }, [checkForNewActivity]);
+  useLiveRefresh(checkForNewActivity);
 
   const handleOpenNotifications = () => {
     setShowNotifications(!showNotifications);
     if (!showNotifications) {
       setNotifRead(true);
+      try {
+        if (doctorId) window.localStorage.setItem(`caresync_notif_seen:${doctorId}`, String(Date.now()));
+      } catch {
+        // storage unavailable
+      }
       fetchNotifications();
     }
   };
@@ -245,6 +292,7 @@ export function Topbar() {
     switch (type) {
       case "error": return <XCircle className="size-4 text-destructive" />;
       case "success": return <CheckCircle2 className="size-4 text-success" />;
+      case "warning": return <AlertTriangle className="size-4 text-warning" />;
       default: return <Clock className="size-4 text-muted-foreground" />;
     }
   };

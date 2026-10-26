@@ -236,9 +236,29 @@ export default function PatientPortalPage() {
     };
   }, [feedbackDoctors]);
 
+  // Coming back from a reschedule on the booking page.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("updated") === "rescheduled") {
+      setMessage("Appointment rescheduled. Your doctor can see the new time.");
+      window.history.replaceState(null, "", "/patient");
+    }
+  }, []);
+
+  // Keep the list current when the patient returns to this tab (e.g. after
+  // the doctor cancelled a day, or a change made in another tab).
+  useEffect(() => {
+    if (!authUserId) return;
+    const refresh = () => {
+      listPatientPortalAppointments(authUserId).then(setAppointments).catch(() => undefined);
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [authUserId]);
+
   const handleCancelAppointment = useCallback(
     async (appointmentId: string) => {
       if (!authUserId) return;
+      if (!window.confirm("Cancel this appointment? The slot will be released for other patients.")) return;
       setMessage(null);
       try {
         await cancelPatientPortalAppointment(appointmentId, {
@@ -246,7 +266,7 @@ export default function PatientPortalPage() {
         });
         const appts = await listPatientPortalAppointments(authUserId);
         setAppointments(appts);
-        setMessage("Appointment cancelled.");
+        setMessage("Appointment cancelled. Your doctor has been updated and the slot is free for others.");
       } catch (err) {
         const text = err instanceof Error ? err.message : "Cancel failed.";
         setMessage(text);
