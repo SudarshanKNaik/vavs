@@ -2318,8 +2318,9 @@ def format_slot_options_for_speech(slots: list[dict[str, Any]]) -> str:
         if start:
             ist = start + timedelta(hours=5, minutes=30)
             day = ist.strftime("%A")
-            time_str = ist.strftime("%-I:%M %p")
-            date_str = ist.strftime("%B %-d")
+            # Build unpadded hour/day manually: "%-I"/"%-d" are POSIX-only and fail on Windows.
+            time_str = f"{ist.hour % 12 or 12}:{ist.strftime('%M %p')}"
+            date_str = f"{ist.strftime('%B')} {ist.day}"
             parts.append(f"{day} {date_str} at {time_str}")
     return ", or ".join(parts) if parts else "Monday at 10:30 AM, Wednesday at 2:30 PM"
 

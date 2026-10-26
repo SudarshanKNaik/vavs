@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     elevenlabs_agent_id: str = ""
     elevenlabs_phone_number_id: str = ""
     elevenlabs_webhook_secret: str = ""  # wsec_... from ElevenLabs dashboard
+    elevenlabs_blood_agent_id: str = ""  # optional; blood campaigns fall back to elevenlabs_agent_id
 
     # SMTP email delivery (OTP + notifications)
     smtp_host: str = "smtp.gmail.com"
@@ -40,7 +41,7 @@ class Settings(BaseSettings):
 
     # Gemini extraction (Vision + text fallback)
     google_gemini_api_key: str = ""
-    google_gemini_model: str = "gemini-2.0-flash"
+    google_gemini_model: str = "gemini-2.5-flash"
 
     # OpenRouter workflow AI builder
     openrouter_api_key: str = ""

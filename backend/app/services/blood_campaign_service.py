@@ -743,7 +743,8 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
                 {
                     "id": None,
                     "worker_name": f"default-worker-{i + 1}",
-                    "agent_id": settings.elevenlabs_agent_id,
+                    "agent_id": settings.elevenlabs_blood_agent_id
+                    or settings.elevenlabs_agent_id,
                     "phone_number_id": settings.elevenlabs_phone_number_id,
                 }
                 for i in range(batch_size)

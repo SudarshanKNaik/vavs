@@ -92,12 +92,11 @@ async def _call_gemini_structured_extraction(
     if not api_key:
         return None
 
-    preferred_model = settings.google_gemini_model.strip() or "gemini-1.5-flash-latest"
+    preferred_model = settings.google_gemini_model.strip() or "gemini-2.5-flash"
     fallback_models = [
         preferred_model,
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro-latest",
-        "gemini-2.0-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash-lite",
     ]
     models_to_try: list[str] = []
     seen_models: set[str] = set()
@@ -135,11 +134,14 @@ async def _call_gemini_structured_extraction(
     for model_name in models_to_try:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model_name}:generateContent?key={api_key}"
+            f"{model_name}:generateContent"
         )
         try:
+            # Key goes in a header so it never appears in logged URLs/exceptions.
             async with httpx.AsyncClient(timeout=35) as client:
-                response = await client.post(url, json=payload)
+                response = await client.post(
+                    url, json=payload, headers={"x-goog-api-key": api_key}
+                )
             response.raise_for_status()
             body = response.json()
             break
@@ -158,7 +160,7 @@ async def _call_gemini_structured_extraction(
                 exc,
                 detail,
             )
-            if status_code in (400, 404):
+            if status_code in (400, 404, 429, 503):
                 continue
             return None
 
@@ -443,7 +445,8 @@ async def enrich_report_text_with_gemini(raw_text: str) -> dict[str, Any] | None
 
     prompt = (
         "You are extracting structured data from medical report text. "
-        "Return strict JSON with keys: raw_text, patient_info, lab_results, medications, tables. "
+        "Return strict JSON with keys: raw_text (string), patient_info (object with name,dob,mrn,phone,insurance), "
+        "lab_results (array of objects with test_name,value,unit,reference_range,flag), medications (array), tables (array). "
         "Use only facts from the input text below.\n\n"
         f"REPORT_TEXT:\n{content[:18000]}"
     )
