@@ -453,6 +453,32 @@ export async function deleteDoctorSlot(doctorId: string, slotId: string) {
   }
 }
 
+export interface CancelDoctorSlotsResult {
+  cancelled_slots: number;
+  skipped_slots: number;
+  cancelled_appointments: number;
+  notified_patient_ids: string[];
+}
+
+export async function cancelDoctorSlots(
+  doctorId: string,
+  payload: { slot_ids: string[]; reason?: string },
+) {
+  const response = await fetch(
+    `${API_URL}/api/doctors/${doctorId}/slots/cancel`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to cancel slots (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<CancelDoctorSlotsResult>;
+}
+
 export async function reserveSlot(
   slotId: string,
   payload: { patient_id: string; hold_minutes?: number },

@@ -3,6 +3,7 @@
 import { useLocalAuth } from "@/lib/local-auth";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  cancelDoctorSlots,
   getDoctorAvailabilitySettings,
   listDoctorAppointments,
   listDoctorSlots,
@@ -12,7 +13,7 @@ import {
   type DoctorManagedSlot,
 } from "@/services/api";
 import { Button } from "@/components/ui/button";
-import { CalendarClock, Loader2, RefreshCw } from "lucide-react";
+import { CalendarClock, CalendarX, Loader2, RefreshCw } from "lucide-react";
 
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
@@ -51,6 +52,7 @@ export default function AvailabilityPage() {
   const [appointmentStatusBySlotId, setAppointmentStatusBySlotId] = useState<Record<string, string>>({});
   const [statusFilter, setStatusFilter] = useState("all");
   const [toggling, setToggling] = useState(false);
+  const [cancellingDay, setCancellingDay] = useState<string | null>(null);
 
   const [message, setMessage] = useState<string | null>(null);
 
@@ -128,6 +130,59 @@ export default function AvailabilityPage() {
 
     return { dates, times, byDate };
   }, [filteredSlots]);
+
+  // Slots a "Cancel day" would touch, from all slots (not just the filtered view),
+  // keyed the same way as the calendar columns. Completed visits are left alone.
+  const cancellableSlotsByDay = useMemo(() => {
+    const byDay = new Map<string, DoctorManagedSlot[]>();
+    for (const slot of slots) {
+      const start = new Date(slot.slot_start);
+      if (Number.isNaN(start.getTime())) continue;
+      const status = getDisplayStatus(slot);
+      if (status === "cancelled" || status === "completed") continue;
+      const dateKey = start.toISOString().slice(0, 10);
+      if (!byDay.has(dateKey)) byDay.set(dateKey, []);
+      byDay.get(dateKey)?.push(slot);
+    }
+    return byDay;
+  }, [slots, getDisplayStatus]);
+
+  const handleCancelDay = useCallback(async (day: string) => {
+    if (!doctorId) return;
+    const daySlots = cancellableSlotsByDay.get(day) || [];
+    if (daySlots.length === 0) return;
+
+    const bookedCount = daySlots.filter((slot) => slot.status === "booked" || slot.status === "reserved").length;
+    const reason = window.prompt(
+      `Cancel ${formatDayLabel(day)}?\n\n` +
+        `${daySlots.length} slot(s) will be closed so no one can book them.` +
+        (bookedCount > 0
+          ? `\n${bookedCount} booked appointment(s) will be cancelled and those patients notified.`
+          : "\nNo patients are booked on this day.") +
+        "\n\nOptional reason to show patients (press OK to continue, Cancel to stop):",
+      "",
+    );
+    if (reason === null) return;
+
+    setCancellingDay(day);
+    setMessage(null);
+    try {
+      const result = await cancelDoctorSlots(doctorId, {
+        slot_ids: daySlots.map((slot) => slot.id),
+        reason: reason.trim() || undefined,
+      });
+      setMessage(
+        `${formatDayLabel(day)} cancelled: ${result.cancelled_slots} slot(s) closed, ` +
+          `${result.cancelled_appointments} appointment(s) cancelled` +
+          (result.cancelled_appointments > 0 ? " and patients notified." : "."),
+      );
+      await fetchAvailabilityContext();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not cancel the day.");
+    } finally {
+      setCancellingDay(null);
+    }
+  }, [cancellableSlotsByDay, doctorId, fetchAvailabilityContext]);
 
   const handleToggleAvailability = useCallback(async (nextValue: boolean) => {
     if (!doctorId) return;
@@ -221,6 +276,12 @@ export default function AvailabilityPage() {
         </p>
       </div>
 
+      {message && (
+        <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          {message}
+        </div>
+      )}
+
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -261,11 +322,31 @@ export default function AvailabilityPage() {
               <thead>
                 <tr className="bg-muted/40">
                   <th className="sticky left-0 z-10 border-b border-r border-border bg-muted/60 px-3 py-2 text-left font-semibold">Time</th>
-                  {calendarData.dates.map((day) => (
-                    <th key={day} className="border-b border-border px-3 py-2 text-left font-semibold">
-                      {formatDayLabel(day)}
-                    </th>
-                  ))}
+                  {calendarData.dates.map((day) => {
+                    const cancellableCount = cancellableSlotsByDay.get(day)?.length || 0;
+                    const isCancelling = cancellingDay === day;
+                    return (
+                      <th key={day} className="border-b border-border px-3 py-2 text-left font-semibold">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>{formatDayLabel(day)}</span>
+                          {cancellableCount > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() => handleCancelDay(day)}
+                              disabled={cancellingDay !== null || loading}
+                              title={`Cancel all ${cancellableCount} open or booked slot(s) on this day`}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-destructive/30 px-1.5 py-0.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {isCancelling ? <Loader2 className="size-3 animate-spin" /> : <CalendarX className="size-3" />}
+                              {isCancelling ? "Cancelling" : "Cancel day"}
+                            </button>
+                          ) : (
+                            <span className="shrink-0 text-[10px] font-normal text-muted-foreground">Day closed</span>
+                          )}
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
@@ -304,12 +385,6 @@ export default function AvailabilityPage() {
           </div>
         )}
       </div>
-
-      {message && (
-        <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          {message}
-        </div>
-      )}
     </div>
   );
 }
