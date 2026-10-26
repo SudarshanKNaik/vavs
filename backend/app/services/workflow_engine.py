@@ -466,6 +466,7 @@ async def _handle_call_patient(node: dict, context: dict) -> tuple[bool, dict]:
         or "follow-up on your recent report"
     )
     available_slots_str = params.get("available_slots", "")
+    available_dates_str = ""
 
     # ── Build slot options from DB when not provided in node params ───────────
     doctor_id = context.get("doctor_id")
@@ -479,11 +480,15 @@ async def _handle_call_patient(node: dict, context: dict) -> tuple[bool, dict]:
             available_slots_str = db_svc.format_slot_options_for_speech(
                 slot_options_raw
             )
+            available_dates_str = db_svc.format_available_dates_for_speech(
+                slot_options_raw
+            )
         except Exception as exc:
             logger.warning(
                 "Could not fetch slot options for doctor %s: %s", doctor_id, exc
             )
             available_slots_str = db_svc.NO_SLOTS_AVAILABLE_TEXT
+            available_dates_str = db_svc.NO_SLOTS_AVAILABLE_TEXT
 
     # ── Persist slot_options in call_log for later reference ─────────────────
     if call_log_id and slot_options_raw:
@@ -510,6 +515,8 @@ async def _handle_call_patient(node: dict, context: dict) -> tuple[bool, dict]:
                 "call_log_id": call_log_id or "",
                 "workflow_id": context.get("workflow_id", ""),
                 "report_id": report_id or "",
+                # Offer these days first; read times only for the chosen day.
+                "available_dates": available_dates_str or available_slots_str,
             },
         )
         conversation_id = result.get("conversation_id") or ""

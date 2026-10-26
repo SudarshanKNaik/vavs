@@ -2464,20 +2464,37 @@ def get_available_slot_options(doctor_id: str, count: int = 12) -> list[dict[str
     agent never offers a time the clinic doesn't actually work.
     """
     _ensure_doctor_rolling_slots(doctor_id)
-    now = datetime.now(timezone.utc)
+    return _bookable_slots(doctor_id, datetime.now(timezone.utc), None, count)
+
+
+def _bookable_slots(
+    doctor_id: str,
+    start_after: datetime,
+    start_before: datetime | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Open slots in clinic working hours, soonest first.
+
+    A reservation whose hold expired counts as open (same rule as
+    reserve_availability_slot), so a time a caller abandoned is offered again.
+    """
     with _cursor() as cur:
         cur.execute(
             """
             SELECT id, doctor_id, slot_start, slot_end, status
             FROM availability_slots
             WHERE doctor_id = %s
-              AND status = 'available'
+              AND (
+                    status = 'available'
+                 OR (status = 'reserved' AND reserved_until IS NOT NULL AND reserved_until < now())
+              )
               AND slot_start > %s
+              AND (%s::timestamptz IS NULL OR slot_start < %s::timestamptz)
             ORDER BY slot_start
             LIMIT %s
             """,
-            # Over-fetch so filtering out-of-hours rows still leaves `count` slots.
-            (doctor_id, now, count * 4),
+            # Over-fetch so filtering out-of-hours rows still leaves `limit` slots.
+            (doctor_id, start_after, start_before, start_before, limit * 4),
         )
         rows = list(cur.fetchall())
 
@@ -2489,9 +2506,91 @@ def get_available_slot_options(doctor_id: str, count: int = 12) -> list[dict[str
         if _is_sunday(start.astimezone(CLINIC_TZ).date()) or not _is_inside_working_hours(start):
             continue
         bookable.append(row)
-        if len(bookable) >= count:
+        if len(bookable) >= limit:
             break
     return bookable
+
+
+def get_available_slots_on_date(doctor_id: str, day: date) -> list[dict[str, Any]]:
+    """Open slots on one clinic-local day (for the agent's live "times on date" tool)."""
+    _ensure_doctor_rolling_slots(doctor_id)
+    day_start = datetime.combine(day, time(0, 0), tzinfo=CLINIC_TZ)
+    start_after = max(day_start, datetime.now(CLINIC_TZ))
+    return _bookable_slots(doctor_id, start_after, day_start + timedelta(days=1), 50)
+
+
+def _speech_date(day: date) -> str:
+    return f"{day.strftime('%A')} {day.day} {day.strftime('%B')}"
+
+
+def format_available_dates_for_speech(slots: list[dict[str, Any]]) -> str:
+    """Just the days that have openings, e.g. "Tuesday 27 October or Wednesday 28 October".
+
+    Lets the agent offer dates first and only read out times for the day the
+    patient picks, instead of reciting every slot.
+    """
+    days = sorted(
+        {
+            start.astimezone(CLINIC_TZ).date()
+            for start in (_parse_iso_datetime(s.get("slot_start")) for s in slots)
+            if start
+        }
+    )
+    if not days:
+        return NO_SLOTS_AVAILABLE_TEXT
+    labels = [_speech_date(d) for d in days]
+    return labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " or " + labels[-1]
+
+
+def hold_slot_for_call(
+    doctor_id: str,
+    patient_id: str,
+    day: date,
+    local_time: time,
+    hold_minutes: int = 30,
+) -> dict[str, Any]:
+    """Reserve one slot for a patient while they're on the phone with the agent.
+
+    The hold is atomic (reserve_availability_slot), so two simultaneous calls
+    can't both get the same time: the second caller is told it was just taken.
+    Holding a new time releases this patient's other live holds with this
+    doctor, so changing their mind mid-call doesn't block several slots. The
+    post-call booking then converts the hold into an appointment.
+    """
+    local_start = datetime.combine(day, local_time, tzinfo=CLINIC_TZ)
+    start_utc = local_start.astimezone(timezone.utc)
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT id FROM availability_slots
+            WHERE doctor_id = %s AND slot_start >= %s AND slot_start < %s
+            LIMIT 1
+            """,
+            (doctor_id, start_utc, start_utc + timedelta(minutes=1)),
+        )
+        slot = cur.fetchone()
+
+    held = None
+    if slot and start_utc > datetime.now(timezone.utc) and _is_inside_working_hours(start_utc):
+        held = reserve_slot(slot_id=str(slot["id"]), patient_id=patient_id, hold_minutes=hold_minutes)
+
+    if held:
+        with _cursor() as cur:
+            cur.execute(
+                """
+                UPDATE availability_slots
+                SET status = 'available', reserved_by = NULL, reserved_until = NULL, updated_at = now()
+                WHERE doctor_id = %s
+                  AND reserved_by = %s
+                  AND status = 'reserved'
+                  AND id <> %s
+                """,
+                (doctor_id, patient_id, held["id"]),
+            )
+        return {"held": True, "slot": held}
+
+    return {"held": False, "alternatives": get_available_slots_on_date(doctor_id, day)}
 
 
 def _speech_time(local_dt: datetime) -> str:
