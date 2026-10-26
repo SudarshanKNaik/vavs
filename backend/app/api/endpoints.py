@@ -823,6 +823,11 @@ class AvailabilitySlotUpdateRequest(BaseModel):
     status: str | None = None
 
 
+class AvailabilitySlotsCancelRequest(BaseModel):
+    slot_ids: list[str] = Field(min_length=1, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class PatientPortalRegisterRequest(BaseModel):
     auth_user_id: str
     email: str
@@ -1140,6 +1145,27 @@ async def delete_doctor_slot(doctor_id: str, slot_id: str):
         logger.exception("Delete slot failed slot_id=%s", slot_id)
         raise HTTPException(
             status_code=400, detail=f"Delete slot failed: {exc}"
+        ) from exc
+
+
+@router.post("/doctors/{doctor_id}/slots/cancel")
+async def cancel_doctor_slots(doctor_id: str, body: AvailabilitySlotsCancelRequest):
+    """Cancel several slots at once (the doctor's "Cancel day" action).
+
+    Booked appointments on those slots are cancelled and the patients notified.
+    """
+    doctor = _resolve_doctor_or_404(doctor_id)
+
+    try:
+        return await _run_db_call(
+            db.cancel_doctor_slots, doctor["id"], body.slot_ids, body.reason
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Cancel slots failed doctor_id=%s", doctor_id)
+        raise HTTPException(
+            status_code=400, detail=f"Cancel slots failed: {exc}"
         ) from exc
 
 
@@ -1889,7 +1915,8 @@ def _resolve_date(raw: str) -> str:
     if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
         return raw
 
-    today = datetime.now(ZoneInfo("America/Toronto")).date()
+    # Relative dates ("tomorrow", "Thursday") must be resolved in clinic time.
+    today = datetime.now(ZoneInfo(settings.clinic_timezone)).date()
 
     # "tomorrow"
     if raw.lower() == "tomorrow":

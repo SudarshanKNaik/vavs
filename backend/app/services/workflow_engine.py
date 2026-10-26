@@ -473,7 +473,9 @@ async def _handle_call_patient(node: dict, context: dict) -> tuple[bool, dict]:
 
     if doctor_id and not available_slots_str:
         try:
-            slot_options_raw = db_svc.get_available_slot_options(doctor_id, count=3)
+            # Give the agent the full upcoming list (not just 3) so it can answer
+            # "what else do you have?" without making times up.
+            slot_options_raw = db_svc.get_available_slot_options(doctor_id)
             available_slots_str = db_svc.format_slot_options_for_speech(
                 slot_options_raw
             )
@@ -481,9 +483,7 @@ async def _handle_call_patient(node: dict, context: dict) -> tuple[bool, dict]:
             logger.warning(
                 "Could not fetch slot options for doctor %s: %s", doctor_id, exc
             )
-            available_slots_str = (
-                "Monday at 10:30 AM, Wednesday at 2:30 PM, or Friday at 10:30 AM"
-            )
+            available_slots_str = db_svc.NO_SLOTS_AVAILABLE_TEXT
 
     # ── Persist slot_options in call_log for later reference ─────────────────
     if call_log_id and slot_options_raw:

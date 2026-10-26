@@ -12,9 +12,10 @@ or received via webhook at ``POST /api/elevenlabs/webhook``.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -108,8 +109,19 @@ async def initiate_outbound_call(
 
     normalized_phone = _normalize_to_india_e164(patient_phone)
 
+    # The agent has no clock of its own: without today's date it guesses what
+    # "tomorrow" or "this Thursday" means and gives patients wrong dates.
+    try:
+        clinic_tz = ZoneInfo(settings.clinic_timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        clinic_tz = timezone.utc
+    clinic_now = datetime.now(clinic_tz)
+
     # ----- build dynamic variables that the agent prompt can reference -----
     dynamic_variables = {
+        "current_date": f"{clinic_now.strftime('%A')} {clinic_now.day} {clinic_now.strftime('%B %Y')} ({clinic_now.date().isoformat()})",
+        "current_time": f"{clinic_now.hour % 12 or 12}:{clinic_now.strftime('%M %p')}",
+        "clinic_timezone": settings.clinic_timezone,
         "patient_name": patient_name,
         "doctor_name": doctor_name,
         "lab_result_summary": lab_result_summary or "recent lab results",
@@ -119,7 +131,10 @@ async def initiate_outbound_call(
         "call_reason": call_reason or "recent lab results",
         "reason": call_reason or "recent lab results",
         "available_slots": available_slots
-        or "Monday at 10:00 AM, Wednesday at 2:00 PM, or Friday at 9:00 AM",
+        or (
+            "NO OPEN SLOTS. Do not offer or confirm any date or time; "
+            "tell the patient the clinic will call back to schedule."
+        ),
         "report_title": report_title or "your recent medical report",
         "report_date": report_date or "",
         "doctor_specialty": doctor_specialty or "",

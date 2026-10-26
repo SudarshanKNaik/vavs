@@ -1297,12 +1297,37 @@ def create_appointment_from_call_confirmation(
         )
         slot = cur.fetchone()
 
+    # Never invent a slot: if the agent confirmed a time the doctor doesn't
+    # offer (outside hours, a break, a cancelled day), fail so the call log
+    # shows it and staff can follow up, instead of silently booking it.
     if not slot:
-        slot = create_doctor_slot(
-            doctor_id=doctor_id,
-            slot_start=start_dt.isoformat(),
-            slot_end=end_dt.isoformat(),
-            status="available",
+        raise RuntimeError(
+            f"No slot exists at {local_start_dt.strftime('%Y-%m-%d %H:%M')} clinic time; "
+            "the confirmed time does not match the doctor's schedule"
+        )
+    if slot.get("status") == "cancelled":
+        raise RuntimeError(
+            f"The slot at {local_start_dt.strftime('%Y-%m-%d %H:%M')} clinic time was "
+            "cancelled by the doctor and cannot be booked"
+        )
+    if slot.get("status") == "booked":
+        # The webhook and the auto-poll can both confirm the same call; return
+        # the existing booking for this patient rather than failing.
+        with _cursor() as cur:
+            cur.execute(
+                """
+                SELECT * FROM appointments
+                WHERE slot_id = %s AND patient_id = %s AND status <> 'cancelled'
+                LIMIT 1
+                """,
+                (slot["id"], patient_id),
+            )
+            existing_for_patient = cur.fetchone()
+        if existing_for_patient:
+            return existing_for_patient
+        raise RuntimeError(
+            f"The slot at {local_start_dt.strftime('%Y-%m-%d %H:%M')} clinic time is "
+            "already booked by another patient"
         )
 
     reserved_until_dt = _parse_iso_datetime(slot.get("reserved_until"))
@@ -1548,6 +1573,108 @@ def cancel_appointment_for_patient_portal(
         cancel_note = f"{cancel_note}: {reason.strip()}"
 
     return cancel_appointment(appointment_id, cancel_note=cancel_note)
+
+
+def cancel_doctor_slots(
+    doctor_id: str,
+    slot_ids: list[str],
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Cancel a set of a doctor's slots (e.g. a whole day) in one transaction.
+
+    Slots become 'cancelled' so patients can't book them and the rolling
+    generator doesn't recreate them. Active appointments on those slots are
+    cancelled and each affected patient gets a notification. Slots whose
+    appointment is already completed are left untouched.
+    """
+    if not slot_ids:
+        raise RuntimeError("No slots selected")
+
+    cancel_note = "Cancelled by doctor (day cancelled)"
+    if reason and reason.strip():
+        cancel_note = f"{cancel_note}: {reason.strip()}"
+
+    with _cursor() as cur:
+        with cur.connection.transaction():
+            cur.execute(
+                """
+                SELECT s.id, s.slot_start, s.status
+                FROM availability_slots s
+                WHERE s.doctor_id = %s
+                  AND s.id = ANY(%s::uuid[])
+                  AND s.status <> 'cancelled'
+                  AND NOT EXISTS (
+                        SELECT 1 FROM appointments a
+                        WHERE a.slot_id = s.id
+                          AND a.status IN ('completed', 'in_progress', 'no_show')
+                  )
+                FOR UPDATE
+                """,
+                (doctor_id, slot_ids),
+            )
+            slots = list(cur.fetchall())
+            target_ids = [row["id"] for row in slots]
+
+            cancelled_appointments: list[dict[str, Any]] = []
+            if target_ids:
+                cur.execute(
+                    """
+                    UPDATE appointments
+                    SET status = 'cancelled',
+                        notes = trim(both E'\n' from coalesce(notes, '') || E'\n' || %s),
+                        updated_at = now()
+                    WHERE slot_id = ANY(%s::uuid[])
+                      AND status IN ('booked', 'confirmed')
+                    RETURNING id, patient_id, slot_id
+                    """,
+                    (cancel_note, target_ids),
+                )
+                cancelled_appointments = list(cur.fetchall())
+
+                cur.execute(
+                    """
+                    UPDATE availability_slots
+                    SET status = 'cancelled',
+                        reserved_by = NULL,
+                        reserved_until = NULL,
+                        updated_at = now()
+                    WHERE id = ANY(%s::uuid[])
+                    """,
+                    (target_ids,),
+                )
+
+                start_by_slot = {row["id"]: row["slot_start"] for row in slots}
+                for appt in cancelled_appointments:
+                    start = _parse_iso_datetime(start_by_slot.get(appt["slot_id"]))
+                    when = (
+                        start.astimezone(CLINIC_TZ).strftime("%A %d %B %Y at %I:%M %p")
+                        if start
+                        else "your scheduled time"
+                    )
+                    message = (
+                        f"Your appointment on {when} was cancelled by the doctor. "
+                        "Please book a new slot from the patient portal."
+                    )
+                    if reason and reason.strip():
+                        message = f"{message} Reason: {reason.strip()}"
+                    cur.execute(
+                        """
+                        INSERT INTO notifications (patient_id, recipient, message, priority)
+                        VALUES (%s, 'patient', %s, 'high')
+                        """,
+                        (appt["patient_id"], message),
+                    )
+
+    return _json_safe(
+        {
+            "cancelled_slots": len(target_ids),
+            "skipped_slots": len(slot_ids) - len(target_ids),
+            "cancelled_appointments": len(cancelled_appointments),
+            "notified_patient_ids": sorted(
+                {str(appt["patient_id"]) for appt in cancelled_appointments}
+            ),
+        }
+    )
 
 
 def reschedule_appointment_for_patient_portal(
@@ -2288,8 +2415,18 @@ def create_consultation_message(payload: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def get_available_slot_options(doctor_id: str, count: int = 3) -> list[dict[str, Any]]:
-    """Return the top `count` available slots for a doctor (used for offering during call)."""
+NO_SLOTS_AVAILABLE_TEXT = (
+    "NO OPEN SLOTS. There are currently no open appointment slots. Do not offer "
+    "or confirm any date or time; tell the patient the clinic will call back to schedule."
+)
+
+
+def get_available_slot_options(doctor_id: str, count: int = 12) -> list[dict[str, Any]]:
+    """Return the next `count` bookable slots for a doctor (used for offering during call).
+
+    Only slots inside clinic working hours on working days are returned, so the
+    agent never offers a time the clinic doesn't actually work.
+    """
     _ensure_doctor_rolling_slots(doctor_id)
     now = datetime.now(timezone.utc)
     with _cursor() as cur:
@@ -2303,26 +2440,52 @@ def get_available_slot_options(doctor_id: str, count: int = 3) -> list[dict[str,
             ORDER BY slot_start
             LIMIT %s
             """,
-            (doctor_id, now, count),
+            # Over-fetch so filtering out-of-hours rows still leaves `count` slots.
+            (doctor_id, now, count * 4),
         )
-        return list(cur.fetchall())
+        rows = list(cur.fetchall())
+
+    bookable = []
+    for row in rows:
+        start = _parse_iso_datetime(row.get("slot_start"))
+        if not start:
+            continue
+        if _is_sunday(start.astimezone(CLINIC_TZ).date()) or not _is_inside_working_hours(start):
+            continue
+        bookable.append(row)
+        if len(bookable) >= count:
+            break
+    return bookable
+
+
+def _speech_time(local_dt: datetime) -> str:
+    # Build unpadded hour manually: "%-I" is POSIX-only and fails on Windows.
+    return f"{local_dt.hour % 12 or 12}:{local_dt.strftime('%M %p')}"
 
 
 def format_slot_options_for_speech(slots: list[dict[str, Any]]) -> str:
-    """Format slot list into a human-readable string for ElevenLabs agent speech."""
-    if not slots:
-        return "Monday at 10:30 AM, Wednesday at 2:30 PM, or Friday at 10:30 AM"
-    parts = []
+    """Format slots for the ElevenLabs agent, grouped by day in clinic time.
+
+    Example: "Tuesday 27 October 2026 (2026-10-27): 10:30 AM, 11:00 AM; Wednesday ..."
+    The ISO date lets the agent fill `confirmed_date` exactly.
+    """
+    by_day: dict[date, list[str]] = {}
     for slot in slots:
         start = _parse_iso_datetime(slot.get("slot_start"))
-        if start:
-            ist = start + timedelta(hours=5, minutes=30)
-            day = ist.strftime("%A")
-            # Build unpadded hour/day manually: "%-I"/"%-d" are POSIX-only and fail on Windows.
-            time_str = f"{ist.hour % 12 or 12}:{ist.strftime('%M %p')}"
-            date_str = f"{ist.strftime('%B')} {ist.day}"
-            parts.append(f"{day} {date_str} at {time_str}")
-    return ", or ".join(parts) if parts else "Monday at 10:30 AM, Wednesday at 2:30 PM"
+        if not start:
+            continue
+        local = start.astimezone(CLINIC_TZ)
+        by_day.setdefault(local.date(), []).append(_speech_time(local))
+
+    if not by_day:
+        return NO_SLOTS_AVAILABLE_TEXT
+
+    parts = [
+        f"{day.strftime('%A')} {day.day} {day.strftime('%B %Y')} ({day.isoformat()}): "
+        + ", ".join(times)
+        for day, times in sorted(by_day.items())
+    ]
+    return "; ".join(parts)
 
 
 def list_doctor_upcoming_appointments_with_report(
