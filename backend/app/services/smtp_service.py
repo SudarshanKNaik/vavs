@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import smtplib
+from concurrent.futures import ThreadPoolExecutor
 from email.message import EmailMessage
 from typing import Any
 
@@ -89,3 +90,129 @@ async def send_notification_email(to_email: str, subject: str, message: str) -> 
         "</div>"
     )
     return await send_email(to_email=to_email, subject=subject, html=html, text=message)
+
+
+# ---------------------------------------------------------------------------
+# Appointment confirmation emails
+# ---------------------------------------------------------------------------
+
+_email_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="booking-email")
+
+
+def _appointment_email_context(appointment_id: str) -> dict[str, Any] | None:
+    from app.services.postgres_service import CLINIC_TZ, _cursor
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT a.id, a.status, a.consultation_type,
+                   s.slot_start, s.slot_end,
+                   p.name AS patient_name,
+                   pa.email AS patient_email,
+                   d.name AS doctor_name, d.specialty AS doctor_specialty
+            FROM appointments a
+            JOIN availability_slots s ON s.id = a.slot_id
+            JOIN patients p ON p.id = a.patient_id
+            LEFT JOIN patient_accounts pa ON pa.patient_id = a.patient_id
+            LEFT JOIN doctors d ON d.id = a.doctor_id
+            WHERE a.id = %s
+            """,
+            (appointment_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    start = row["slot_start"].astimezone(CLINIC_TZ)
+    end = row["slot_end"].astimezone(CLINIC_TZ)
+    row["when"] = f"{start.strftime('%A')}, {start.day} {start.strftime('%B %Y')}"
+    row["time"] = f"{start.hour % 12 or 12}:{start.strftime('%M %p')} to {end.hour % 12 or 12}:{end.strftime('%M %p')}"
+    return row
+
+
+def send_appointment_confirmation_sync(appointment_id: str, rescheduled_from: str | None = None) -> bool:
+    """Email the patient their booking (or new time, after a reschedule).
+
+    Returns False without error when there's nothing to send: SMTP isn't
+    configured, the patient has no email on file, or the booking is gone.
+    """
+    from html import escape
+
+    if not (settings.smtp_username.strip() and settings.smtp_password.strip()):
+        logger.info("Booking email skipped: SMTP not configured")
+        return False
+    ctx = _appointment_email_context(appointment_id)
+    if not ctx or ctx["status"] not in {"booked", "confirmed"}:
+        return False
+    if not ctx["patient_email"]:
+        logger.info("Booking email skipped: no email on file for appointment %s", appointment_id)
+        return False
+
+    doctor = ctx["doctor_name"] or "your doctor"
+    specialty = f" ({ctx['doctor_specialty']})" if ctx["doctor_specialty"] else ""
+    consult = {"video": "Video consultation", "chat": "Chat consultation", "in_person": "In-person visit"}.get(
+        ctx["consultation_type"], "Consultation"
+    )
+    portal = f"{settings.frontend_base_url.rstrip('/')}/patient"
+
+    if rescheduled_from:
+        from app.services.postgres_service import CLINIC_TZ, _cursor
+
+        with _cursor() as cur:
+            cur.execute(
+                "SELECT s.slot_start FROM appointments a JOIN availability_slots s ON s.id = a.slot_id WHERE a.id = %s",
+                (rescheduled_from,),
+            )
+            old = cur.fetchone()
+        old_when = (
+            old["slot_start"].astimezone(CLINIC_TZ).strftime("%A %d %B at %I:%M %p") if old else "your previous time"
+        )
+        subject = f"Appointment rescheduled: {ctx['when']}"
+        intro = f"Your appointment has been moved from {old_when} to the new time below."
+    else:
+        subject = f"Appointment confirmed: {ctx['when']}"
+        intro = "Your appointment is confirmed. Here are the details."
+
+    rows = [
+        ("Doctor", f"{doctor}{specialty}"),
+        ("Date", ctx["when"]),
+        ("Time", ctx["time"]),
+        ("Type", consult),
+    ]
+    rows_html = "".join(
+        f"<tr><td style='padding:6px 16px 6px 0;color:#6E6057'>{escape(k)}</td>"
+        f"<td style='padding:6px 0;font-weight:600;color:#2C2420'>{escape(v)}</td></tr>"
+        for k, v in rows
+    )
+    html = (
+        "<div style='font-family:Arial,sans-serif;line-height:1.5;color:#2C2420;max-width:520px'>"
+        "<h2 style='margin:0 0 12px'>CareSync AI</h2>"
+        f"<p>Hello {escape(ctx['patient_name'] or 'there')},</p>"
+        f"<p>{escape(intro)}</p>"
+        f"<table style='border-collapse:collapse;margin:12px 0'>{rows_html}</table>"
+        f"<p>You can view, reschedule or cancel it in your <a href='{escape(portal)}'>patient portal</a>.</p>"
+        "<p style='color:#6E6057;font-size:13px'>If you didn't book this appointment, please contact the clinic.</p>"
+        "</div>"
+    )
+    text = (
+        f"Hello {ctx['patient_name'] or 'there'},\n\n{intro}\n\n"
+        + "\n".join(f"{k}: {v}" for k, v in rows)
+        + f"\n\nView, reschedule or cancel: {portal}\n"
+    )
+    _send_email_sync(ctx["patient_email"], subject, html, text)
+    logger.info("Booking email sent for appointment %s", appointment_id)
+    return True
+
+
+def _send_confirmation_safely(appointment_id: str, rescheduled_from: str | None) -> None:
+    try:
+        send_appointment_confirmation_sync(appointment_id, rescheduled_from)
+    except Exception:
+        logger.exception("Booking confirmation email failed for appointment %s", appointment_id)
+
+
+def queue_appointment_confirmation(appointment_id: Any, rescheduled_from: Any = None) -> None:
+    """Send the confirmation email in the background; never delays or fails a booking."""
+    if appointment_id:
+        _email_executor.submit(
+            _send_confirmation_safely, str(appointment_id), str(rescheduled_from) if rescheduled_from else None
+        )

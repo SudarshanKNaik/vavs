@@ -1172,6 +1172,8 @@ def _finalize_reserved_slot_booking(
     patient_id: str,
     consultation_type: str,
     notes: str | None,
+    *,
+    send_confirmation: bool = True,
 ) -> dict[str, Any] | None:
     with _cursor() as cur:
         cur.execute(
@@ -1213,6 +1215,8 @@ def _finalize_reserved_slot_booking(
     # Every new booking (portal, reschedule, AI call) passes through here.
     if appointment:
         _calendar_sync(appointment["id"])
+        if send_confirmation:
+            _booking_email(appointment["id"])
     return appointment
 
 
@@ -1821,6 +1825,16 @@ def _drop_google_busy(doctor_id: str, slots: list[dict[str, Any]]) -> list[dict[
         return slots
 
 
+def _booking_email(appointment_id: Any, rescheduled_from: Any = None) -> None:
+    """Email the patient their confirmed (or rescheduled) appointment, in the background."""
+    try:
+        from app.services.smtp_service import queue_appointment_confirmation
+
+        queue_appointment_confirmation(appointment_id, rescheduled_from)
+    except Exception as exc:  # never let email break a booking
+        logger.warning("Could not queue booking email: %s", exc)
+
+
 def _calendar_sync(*appointment_ids: Any) -> None:
     """Mirror these appointments to the doctor's Google Calendar (background, best-effort)."""
     try:
@@ -2093,6 +2107,7 @@ def reschedule_appointment_for_patient_portal(
         patient_id=patient["id"],
         consultation_type=consultation_type or current["consultation_type"],
         notes=notes or current.get("notes"),
+        send_confirmation=False,  # a "rescheduled" email goes out below instead
     )
 
     if not new_appointment:
@@ -2104,6 +2119,7 @@ def reschedule_appointment_for_patient_portal(
         cancelled_by="patient",
         rescheduled_to_appointment_id=str(new_appointment["id"]),
     )
+    _booking_email(new_appointment["id"], rescheduled_from=current["id"])
     doctor = get_doctor(str(new_appointment["doctor_id"]))
 
     with _cursor() as cur:
@@ -2755,20 +2771,10 @@ def create_consultation_room(
 
     appointment = get_appointment(appointment_id)
     if appointment and appointment.get("consultation_type") == "video":
-        # Keep the call focused for doctor + patient and suppress feedback/close-page prompts.
-        jitsi_config_flags = "&".join(
-            [
-                "config.prejoinConfig.enabled=false",
-                "config.enableClosePage=false",
-                "config.feedbackPercentage=0",
-                "config.disableInviteFunctions=true",
-                "config.disableThirdPartyRequests=true",
-                "config.transcription.enabled=false",
-                "config.transcription.autoCaptionOnTranscribe=false",
-                "config.toolbarButtons=%5B%22microphone%22,%22camera%22,%22hangup%22,%22tileview%22,%22fullscreen%22,%22settings%22%5D",
-            ]
-        )
-        room_url = f"https://meet.jit.si/{safe_room_name}#{jitsi_config_flags}"
+        # Video runs in our own browser-to-browser call on the consultation
+        # page (no third-party sign-in), so the "URL" is that page.
+        provider = "webrtc"
+        room_url = f"/consultation/{appointment_id}"
 
     return _insert_row(
         "consultation_rooms",
