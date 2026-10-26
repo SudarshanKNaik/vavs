@@ -11,6 +11,8 @@ def _phone() -> str:
 ORIGINAL_PATIENT_KEYS = {
     "id", "doctor_id", "name", "phone", "dob", "mrn", "insurance",
     "primary_physician", "last_visit", "risk_level", "notes", "created_at", "updated_at",
+    # Added by migration 026: the language the patient's AI calls are held in.
+    "preferred_language",
 }
 
 
