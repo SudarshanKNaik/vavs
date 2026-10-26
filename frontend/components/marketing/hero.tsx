@@ -40,9 +40,6 @@ export function Hero() {
         aria-hidden="true"
       />
 
-      {/* Thin vertical rule — editorial column marker */}
-      <div className="pointer-events-none absolute left-[56px] top-0 hidden h-full w-px bg-[#E8E2D9] lg:block" aria-hidden="true" />
-
       <div className="relative mx-auto h-full max-w-7xl px-6 pt-28 pb-12 md:px-8 md:pt-32 md:pb-16">
         <div className="grid h-full grid-cols-1 gap-10 md:grid-cols-[minmax(0,460px)_minmax(0,1fr)] md:gap-8">
           {/* Left content */}

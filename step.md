@@ -78,6 +78,69 @@ backend, create `frontend/.env.local` with:
 NEXT_PUBLIC_API_URL=https://your-backend-url
 ```
 
+## Demo doctor login
+
+Signing up needs an email OTP, which only works once SMTP is configured. For
+local testing, use this account (created directly in the database):
+
+| Field | Value |
+|---|---|
+| Page | http://localhost:3000/signIn |
+| Email | `doctor@caresync.local` |
+| Password | `Doctor@123` |
+| Linked doctor | Dr. Ananya Kulkarni, General Physician (`d63f7abf-4a70-49e4-b78b-5a79bb8f1f18`) |
+
+This is a local-only test account. Passwords are currently stored in plain
+text (see `PRODUCT_DIRECTION.md`), so never reuse a real password here. If you
+reset the database, the account is deleted. Recreate it with:
+
+```bash
+docker exec -i caresync-postgres psql -U postgres -d caresync_local <<'SQL'
+WITH acct AS (
+  INSERT INTO user_accounts (role, email, username, mobile, password)
+  VALUES ('doctor', 'doctor@caresync.local', 'Dr. Ananya Kulkarni', '+919000000001', 'Doctor@123')
+  RETURNING id
+)
+UPDATE doctors SET auth_user_id = (SELECT id::text FROM acct)
+WHERE name LIKE 'Dr. Ananya Kulkarni%';
+SQL
+```
+
+## Demo patient login
+
+| Field | Value |
+|---|---|
+| Page | http://localhost:3000/patient-signIn |
+| Email | `patient@caresync.local` |
+| Password | `Patient@123` |
+| Patient | Rahul Patil (`+919000000002`), assigned to the demo doctor, Dr. Ananya Kulkarni |
+
+Because the patient belongs to the demo doctor, you see Rahul Patil in the
+doctor's patient list, and bookings from the patient portal show up on the
+doctor's side.
+
+The phone number is a placeholder. Change it to your own number before you
+test AI calls or SMS, or the call goes to a number that doesn't exist.
+
+To recreate the account after a database reset (run the doctor command first):
+
+```bash
+docker exec -i caresync-postgres psql -U postgres -d caresync_local <<'SQL'
+WITH acct AS (
+  INSERT INTO user_accounts (role, email, username, mobile, password)
+  VALUES ('patient', 'patient@caresync.local', 'Rahul Patil', '+919000000002', 'Patient@123')
+  RETURNING id, email
+), pat AS (
+  INSERT INTO patients (doctor_id, name, phone, notes)
+  SELECT id::text, 'Rahul Patil', '+919000000002', 'Demo patient for local testing'
+  FROM doctors WHERE name LIKE 'Dr. Ananya Kulkarni%'
+  RETURNING id
+)
+INSERT INTO patient_accounts (auth_user_id, patient_id, email)
+SELECT acct.id::text, pat.id, acct.email FROM acct, pat;
+SQL
+```
+
 ## What to check in Docker
 
 Open Docker Desktop, then go to **Containers**. Check these:
