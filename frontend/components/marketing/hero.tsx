@@ -47,8 +47,8 @@ export function Hero() {
             <div>
               {/* Top label */}
               <div
-                className="flex items-center gap-3 animate-fade-in"
-                style={{ animationDelay: "0.1s", opacity: 0, animation: "fadeInUp 0.8s ease forwards 0.1s" }}
+                className="fade-in-up flex items-center gap-3"
+                style={{ animationDuration: "0.8s", animationDelay: "0.1s" }}
               >
                 <span className="h-px w-8 bg-[#6E6057]" />
                 <p className="text-[11px] font-medium tracking-[0.22em] uppercase text-[#6E6057]">
@@ -58,10 +58,9 @@ export function Hero() {
 
               {/* Main headline */}
               <h1
-                className="mt-8 font-serif font-medium text-[clamp(2.6rem,5vw,5rem)] leading-[1.0] tracking-[-0.01em] text-[#1F1916]"
+                className="fade-in-up mt-8 font-serif font-medium text-[clamp(2.6rem,5vw,5rem)] leading-[1.0] tracking-[-0.01em] text-[#1F1916]"
                 style={{
-                  animation: "fadeInUp 1s ease forwards 0.25s",
-                  opacity: 0,
+                  animationDelay: "0.25s",
                   textShadow: "0 1px 0 rgba(255,255,255,0.28)",
                 }}
               >
@@ -80,8 +79,8 @@ export function Hero() {
 
               {/* Sub-copy */}
               <p
-                className="mt-8 max-w-sm text-[15px] font-medium leading-[1.75] text-[#5E5149]"
-                style={{ animation: "fadeInUp 1s ease forwards 0.6s", opacity: 0 }}
+                className="fade-in-up mt-8 max-w-sm text-[15px] font-medium leading-[1.75] text-[#5E5149]"
+                style={{ animationDelay: "0.6s" }}
               >
                 From patient outreach and follow-ups to scheduling and referrals -
                 CareSync AI automates every step so nothing falls through the cracks.
@@ -89,8 +88,8 @@ export function Hero() {
             </div>
 
             <div
-              className="mt-10"
-              style={{ animation: "fadeInUp 1s ease forwards 0.9s", opacity: 0 }}
+              className="fade-in-up mt-10"
+              style={{ animationDelay: "0.9s" }}
             >
               <div className="flex items-center gap-6">
                 <Link
@@ -168,19 +167,6 @@ export function Hero() {
 
       {/* Full-bleed decorative bottom rule */}
       <div className="absolute bottom-0 left-0 right-0 h-px bg-[#E8E2D9]" />
-
-      <style jsx>{`
-        @keyframes fadeInUp {
-          from {
-            opacity: 0;
-            transform: translateY(18px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-      `}</style>
     </section>
   );
 }

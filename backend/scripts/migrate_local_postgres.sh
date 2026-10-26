@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DB_URL="${DATABASE_URL:-postgresql://postgres:postgres@localhost:5432/caresync_local}"
+DB_URL="${DATABASE_URL:-postgresql://postgres:postgres@localhost:5433/caresync_local}"
 MIGRATIONS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../migrations" && pwd)"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-caresync-vavs-postgres}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"

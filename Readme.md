@@ -96,7 +96,7 @@ The app starts with the defaults. Fill in the keys below to turn on the matching
 
 | Variable | Needed for |
 |---|---|
-| `DATABASE_URL` | Database (default: `postgresql://postgres:postgres@localhost:5432/caresync_local`) |
+| `DATABASE_URL` | Database (default: `postgresql://postgres:postgres@localhost:5433/caresync_local`) |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID`, `ELEVENLABS_PHONE_NUMBER_ID` | AI voice calls |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` | Telephony and SMS |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` | OTP and email delivery |

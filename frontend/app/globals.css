@@ -239,6 +239,25 @@
   background-color: var(--muted-foreground);
 }
 
+/* ─── Hero entrance animation ────────────────────────────────────────────── */
+/* Referenced from a class (not only inline styles) so Tailwind keeps the keyframes.
+   Set per-element timing with an inline animationDelay. */
+.fade-in-up {
+  opacity: 0;
+  animation: fadeInUp 1s ease forwards;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* ─── Global transitions ─────────────────────────────────────────────────── */
 a, button {
   transition-property: color, background-color, border-color, opacity, transform;
