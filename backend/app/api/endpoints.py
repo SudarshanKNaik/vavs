@@ -2453,7 +2453,7 @@ def get_follow_up_scheduler_state() -> dict[str, Any]:
 
 
 async def _auto_poll_call_result(
-    log_id: str, max_attempts: int = 40, interval: int = 30
+    log_id: str, max_attempts: int = 300, interval: int = 4
 ):
     """
     Background task that polls ElevenLabs every *interval* seconds until the
@@ -2461,6 +2461,11 @@ async def _auto_poll_call_result(
     an appointment row if the patient confirmed).
 
     This replaces the need to manually call POST /api/call-logs/{id}/check.
+
+    It is the fallback when the post-call webhook can't reach this server
+    (e.g. APP_BASE_URL is localhost), so it polls often: a 30 s interval used
+    to add up to half a minute before a booking appeared. 300 x 4 s keeps the
+    same ~20-minute limit.
     """
     from app.services.elevenlabs_service import (
         get_conversation,
@@ -2474,8 +2479,9 @@ async def _auto_poll_call_result(
         interval,
     )
 
-    # Wait a bit before the first poll — the call takes time to connect
-    await asyncio.sleep(15)
+    # Short wait before the first poll (gives ElevenLabs time to assign the
+    # conversation id); short calls can end within seconds.
+    await asyncio.sleep(5)
 
     for attempt in range(1, max_attempts + 1):
         try:

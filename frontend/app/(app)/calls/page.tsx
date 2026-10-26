@@ -5,6 +5,7 @@ import { useLocalAuth } from "@/lib/local-auth";
 import { listCallLogs, checkCallStatus } from "@/services/api";
 
 import { cn } from "@/lib/utils";
+import { useLiveRefresh } from "@/components/app/appointments-overview";
 import { Button } from "@/components/ui/button";
 import {
   ChevronDown,
@@ -77,6 +78,19 @@ export default function CallsPage() {
   useEffect(() => {
     fetchCallLogs();
   }, [fetchCallLogs]);
+
+  // Show call outcomes (and the bookings they create) as soon as the backend
+  // records them, without a spinner on every refresh.
+  const refreshQuietly = useCallback(async () => {
+    if (!doctorId) return;
+    try {
+      const data = await listCallLogs(undefined, doctorId);
+      setCallLogs(Array.isArray(data) ? data : []);
+    } catch {
+      // keep what's shown
+    }
+  }, [doctorId]);
+  useLiveRefresh(refreshQuietly);
 
   const filtered = callLogs.filter((cl) => {
     if (filterStatus !== "all" && cl.status !== filterStatus) return false;

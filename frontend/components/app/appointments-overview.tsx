@@ -10,7 +10,8 @@ import {
   type DoctorAppointmentItem,
 } from "@/services/api";
 
-const REFRESH_MS = 30_000;
+// How often doctor pages re-check for new bookings and call results.
+const REFRESH_MS = 10_000;
 
 export function formatSlotTime(value?: string | null) {
   if (!value) return "-";
