@@ -3503,3 +3503,106 @@ def list_blood_requests(doctor_id: str, limit: int = 50) -> list[dict[str, Any]]
             (doctor_id, limit),
         )
         return _json_safe(list(cur.fetchall()))
+
+
+# ---------------------------------------------------------------------------
+# Outbreak Watch: symptom reports from AI calls
+# ---------------------------------------------------------------------------
+
+_SYMPTOM_REPORT_COLUMNS = (
+    "doctor_id", "patient_id", "call_log_id", "source", "locality",
+    "latitude", "longitude", "symptoms", "syndrome", "reported_at",
+)
+
+
+def upsert_call_symptom_report(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """One report per call; a second pass over the same call replaces the first."""
+    values = [payload.get(col) for col in _SYMPTOM_REPORT_COLUMNS]
+    with _cursor() as cur:
+        cur.execute(
+            f"""
+            INSERT INTO symptom_reports ({", ".join(_SYMPTOM_REPORT_COLUMNS)})
+            VALUES ({", ".join(["%s"] * len(_SYMPTOM_REPORT_COLUMNS))})
+            ON CONFLICT (call_log_id) WHERE call_log_id IS NOT NULL
+            DO UPDATE SET symptoms = EXCLUDED.symptoms,
+                          syndrome = EXCLUDED.syndrome,
+                          locality = EXCLUDED.locality,
+                          latitude = EXCLUDED.latitude,
+                          longitude = EXCLUDED.longitude
+            RETURNING *
+            """,
+            values,
+        )
+        return _json_safe(cur.fetchone())
+
+
+def insert_symptom_reports(rows: list[dict[str, Any]]) -> int:
+    if not rows:
+        return 0
+    with _cursor() as cur:
+        cur.executemany(
+            f"""
+            INSERT INTO symptom_reports ({", ".join(_SYMPTOM_REPORT_COLUMNS)})
+            VALUES ({", ".join(["%s"] * len(_SYMPTOM_REPORT_COLUMNS))})
+            """,
+            [[row.get(col) for col in _SYMPTOM_REPORT_COLUMNS] for row in rows],
+        )
+    return len(rows)
+
+
+def delete_demo_symptom_reports(doctor_id: str) -> int:
+    with _cursor() as cur:
+        cur.execute(
+            "DELETE FROM symptom_reports WHERE doctor_id = %s AND source = 'demo'",
+            (doctor_id,),
+        )
+        return cur.rowcount
+
+
+def list_symptom_reports(doctor_id: str, since: datetime) -> list[dict[str, Any]]:
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT locality, latitude, longitude, symptoms, syndrome, source, reported_at
+            FROM symptom_reports
+            WHERE doctor_id = %s AND reported_at >= %s
+            ORDER BY reported_at
+            """,
+            (doctor_id, since),
+        )
+        return list(cur.fetchall())
+
+
+def count_completed_calls(doctor_id: str, since: datetime) -> int:
+    """Calls whose result has come back, i.e. the calls Outbreak Watch has read."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM call_logs cl
+            LEFT JOIN patients p ON p.id = cl.patient_id
+            WHERE COALESCE(cl.doctor_id, p.doctor_id) = %s
+              AND cl.status = 'completed'
+              AND cl.created_at >= %s
+            """,
+            (doctor_id, since),
+        )
+        return int(cur.fetchone()["n"])
+
+
+def count_eligible_donors(doctor_ids: list[str]) -> int:
+    """Donors past their donation cooldown (90 days men, 120 days women)."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM blood_donors d
+            WHERE d.doctor_id = ANY(%s)
+              AND d.last_donated_date + CASE
+                    WHEN LOWER(d.gender) IN ('female', 'f') THEN INTERVAL '120 days'
+                    ELSE INTERVAL '90 days'
+                  END <= CURRENT_DATE
+            """,
+            (doctor_ids,),
+        )
+        return int(cur.fetchone()["n"])

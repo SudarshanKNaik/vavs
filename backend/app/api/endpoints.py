@@ -26,6 +26,7 @@ from app.services.blood_campaign_service import (
     ingest_blood_excel,
     start_blood_campaign,
 )
+from app.services import outbreak_service
 from app.services.workflow_engine import execute_workflow
 from app.services.workflow_ai_builder_service import (
     WorkflowBuilderError,
@@ -585,6 +586,7 @@ class PatientCreate(BaseModel):
     last_visit: str | None = None
     risk_level: str = "low"
     notes: str | None = None
+    locality: str | None = None
 
 
 class PatientUpdate(BaseModel):
@@ -597,6 +599,7 @@ class PatientUpdate(BaseModel):
     last_visit: str | None = None
     risk_level: str | None = None
     notes: str | None = None
+    locality: str | None = None
 
 
 class ConditionCreate(BaseModel):
@@ -1677,6 +1680,8 @@ async def list_doctor_portal_patients(doctor_id: str):
 @router.post("/patients", status_code=201)
 async def create_patient(body: PatientCreate):
     payload = body.model_dump()
+    if not payload.get("locality"):
+        payload.pop("locality", None)
     return db.create_patient(payload)
 
 
@@ -2266,6 +2271,14 @@ def _remember_patient_language(call_log: dict[str, Any] | None, language: str) -
         logger.warning("Could not save preferred language for patient %s: %s", patient_id, exc)
 
 
+def _record_call_symptoms(call_log: dict[str, Any] | None, reported: str, transcript: Any) -> None:
+    """Feed the symptoms the patient mentioned into Outbreak Watch."""
+    try:
+        outbreak_service.record_call_symptoms(call_log, reported, transcript)
+    except Exception as exc:
+        logger.warning("Could not record symptoms for call log %s: %s", (call_log or {}).get("id"), exc)
+
+
 def _normalize_dcr_value(entry: Any) -> str:
     """Normalize ElevenLabs DCR values and guard against stringified null-like values."""
     value = entry.get("value", "") if isinstance(entry, dict) else entry
@@ -2730,6 +2743,7 @@ async def _auto_poll_call_result(
             doctor_name = _dcr_val("doctor_name")
             availability_notes = _dcr_val("patient_availability_notes")
             _remember_patient_language(call_log, _dcr_val("preferred_language"))
+            _record_call_symptoms(call_log, _dcr_val("reported_symptoms"), conversation.get("transcript"))
 
             # Transcript may be a string or a list of message dicts
             raw_transcript = conversation.get("transcript", "")
@@ -3503,6 +3517,7 @@ async def elevenlabs_webhook(request: Request):
 
     log_id = call_log["id"]
     _remember_patient_language(call_log, _dcr_val("preferred_language"))
+    _record_call_symptoms(call_log, _dcr_val("reported_symptoms"), data_section.get("transcript"))
     logger.info(
         "[11L][webhook][matched_call_log] call_log_id=%s workflow_id=%s patient_id=%s",
         log_id,
@@ -4002,6 +4017,70 @@ async def list_blood_requests(doctor_id: str):
     return await _run_db_call(db.list_blood_requests, str(doctor["id"]))
 
 
+# ---------------------------------------------------------------------------
+# Outbreak Watch: symptom clusters from AI call data
+# ---------------------------------------------------------------------------
+
+
+class OutbreakDemoRequest(BaseModel):
+    doctor_id: str
+
+
+class OutbreakBriefEmailRequest(BaseModel):
+    doctor_id: str
+    to_email: str
+
+
+def _outbreak_summary(doctor_id: str) -> dict[str, Any]:
+    # Donors are stored under the resolved doctor id; reports under the id the app sends.
+    donor_ids = [doctor_id]
+    doctor = db.resolve_doctor(doctor_id)
+    if doctor:
+        donor_ids.append(str(doctor["id"]))
+    return outbreak_service.get_outbreak_summary(doctor_id, donor_ids)
+
+
+@router.get("/outbreak/summary")
+async def get_outbreak_summary(doctor_id: str):
+    return await _run_db_call(_outbreak_summary, doctor_id)
+
+
+@router.post("/outbreak/demo-data")
+async def load_outbreak_demo_data(body: OutbreakDemoRequest):
+    inserted = await _run_db_call(outbreak_service.load_demo_data, body.doctor_id)
+    return {"inserted": inserted}
+
+
+@router.delete("/outbreak/demo-data")
+async def clear_outbreak_demo_data(doctor_id: str):
+    deleted = await _run_db_call(outbreak_service.clear_demo_data, doctor_id)
+    return {"deleted": deleted}
+
+
+@router.post("/outbreak/brief/email")
+async def email_outbreak_brief(body: OutbreakBriefEmailRequest):
+    from html import escape
+
+    from app.services.smtp_service import send_email
+
+    to_email = body.to_email.strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", to_email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    summary = await _run_db_call(_outbreak_summary, body.doctor_id)
+    flagged = sum(1 for s in summary["signals"] if s["level"] != "normal")
+    subject = f"Outbreak Watch: {flagged} area(s) flagged" if flagged else "Outbreak Watch: no unusual activity"
+    try:
+        html = (
+            "<div style='font-family: Arial, sans-serif; line-height: 1.5; white-space: pre-wrap;'>"
+            f"{escape(summary['brief'])}</div>"
+        )
+        await send_email(to_email=to_email, subject=subject, html=html, text=summary["brief"])
+    except Exception as exc:
+        logger.warning("Outbreak brief email failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Email isn't configured or the mail server refused it.")
+    return {"sent": True, "to_email": to_email}
+
+
 @router.get("/blood-campaigns/{campaign_id}/map")
 async def get_blood_campaign_map(campaign_id: str):
     payload = await _run_db_call(get_blood_campaign_map_points, campaign_id)
@@ -4147,6 +4226,7 @@ async def check_call_status(log_id: str):
     doctor_name = _dcr_val("doctor_name")
     availability_notes = _dcr_val("patient_availability_notes")
     _remember_patient_language(call_log, _dcr_val("preferred_language"))
+    _record_call_symptoms(call_log, _dcr_val("reported_symptoms"), conversation.get("transcript"))
     transcript = conversation.get("transcript", "")
 
     patient_confirmed = patient_confirmed_raw.lower() in ("true", "yes", "1")
