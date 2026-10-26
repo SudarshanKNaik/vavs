@@ -205,6 +205,61 @@ these keys:
 
 Don't commit `backend/.env`. It is already listed in `backend/.gitignore`.
 
+## Setting up the AI call agent (ElevenLabs dashboard)
+
+The agent's prompt and tools live in the ElevenLabs dashboard, not in this
+repo. For the agent to offer real times and handle several calls at once
+without double-booking, set up the following.
+
+### 1. Prompt
+
+Add this to the agent's system prompt:
+
+```
+Today is {{current_date}}, {{current_time}} ({{clinic_timezone}}).
+Days with open appointments: {{available_dates}}
+
+Booking steps:
+1. Offer only the DAYS above. Don't read out times yet.
+2. When the patient picks a day, call get_available_times with that date and
+   read out the times it returns.
+3. When the patient picks a time, call hold_slot. Only say the appointment is
+   booked if it returns held = true. If not, offer the times it suggests.
+Never invent a day or time. If the days say NO OPEN SLOTS, don't book;
+say the clinic will call back.
+```
+
+### 2. Two server (webhook) tools
+
+The backend must be reachable from the internet: set `APP_BASE_URL` to a
+public URL, e.g. an ngrok tunnel to port 8000. For both tools:
+
+- **Method:** `POST`, JSON body
+- **Header:** `X-Tool-Secret` = the value of `ELEVENLABS_TOOL_SECRET` in
+  `backend/.env` (generated for you; keep it secret)
+- **Body parameter `call_log_id`:** filled from the dynamic variable
+  `{{call_log_id}}` (the backend sends it with every call)
+
+| Tool name | URL | Other body parameters (filled by the agent) |
+|---|---|---|
+| `get_available_times` | `<APP_BASE_URL>/api/elevenlabs/tools/available-times` | `date`: the day the patient chose, as YYYY-MM-DD |
+| `hold_slot` | `<APP_BASE_URL>/api/elevenlabs/tools/hold-slot` | `date` (YYYY-MM-DD), `time` (e.g. `11:00 AM`) |
+
+A held time is reserved for 30 minutes, and the post-call booking turns it
+into an appointment. If the patient changes their mind, holding a new time
+releases the old one.
+
+### 3. Data collection fields
+
+Set the descriptions so the agent records exactly what was held:
+`confirmed_date` as YYYY-MM-DD and `confirmed_time` as 24-hour HH:MM
+(e.g. 14:30).
+
+Without the tools, the agent still works from `{{available_slots}}` (the full
+list at call start), but two simultaneous calls can then pick the same time.
+The second patient's booking fails after the call, and they get an automatic
+follow-up call.
+
 ## Troubleshooting
 
 | Problem | Fix |
