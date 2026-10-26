@@ -4787,6 +4787,17 @@ async def doctor_upcoming_appointments_with_report(doctor_id: str):
     return rows
 
 
+@router.get("/doctors/{doctor_id}/appointment-activity")
+async def doctor_appointment_activity(doctor_id: str, days: int = 14):
+    """Recent bookings, cancellations and reschedules, for the dashboard and bell."""
+    doctor = await _run_db_call(db.resolve_doctor, doctor_id)
+    if not doctor:
+        raise HTTPException(status_code=404, detail="Doctor not found")
+    return await _run_db_call(
+        db.list_doctor_appointment_activity, str(doctor["id"]), max(1, min(days, 90))
+    )
+
+
 @router.get("/patient-portal/upcoming-appointments")
 async def patient_upcoming_appointments_with_report(auth_user_id: str):
     """List upcoming appointments for a patient with linked report context."""
