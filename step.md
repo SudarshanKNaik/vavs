@@ -300,6 +300,14 @@ Set the descriptions so the agent records exactly what was held:
 `confirmed_date` as YYYY-MM-DD and `confirmed_time` as 24-hour HH:MM
 (e.g. 14:30).
 
+**Outbreak Watch (optional):** add a `reported_symptoms` field ("Symptoms the
+patient says they or their family have, comma-separated, or 'none'") and add to
+the prompt: *"Before ending the call, ask once how the patient is feeling and
+whether anyone at home has fever, cough, loose motions or vomiting."* Without
+the field, the backend still finds symptoms in what the patient said in the
+transcript. Set each patient's **Locality** on their profile so reports appear
+on the map.
+
 Without the tools, the agent still works from `{{available_slots}}` (the full
 list at call start), but two simultaneous calls can then pick the same time.
 The second patient's booking fails after the call, and they get an automatic
