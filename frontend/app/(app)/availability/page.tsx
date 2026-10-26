@@ -14,7 +14,7 @@ import {
   type DoctorManagedSlot,
 } from "@/services/api";
 import { Button } from "@/components/ui/button";
-import { CalendarClock, CalendarX, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
+import { CalendarClock, CalendarX, ChevronLeft, ChevronRight, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
 
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
@@ -33,6 +33,14 @@ function formatTimeLabel(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+// Monday (YYYY-MM-DD) of the week a calendar date key falls in.
+function weekStartOf(dateKey: string) {
+  const d = new Date(`${dateKey}T00:00:00Z`);
+  const offset = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - offset);
+  return d.toISOString().slice(0, 10);
 }
 
 function slotTone(status: string) {
@@ -101,6 +109,7 @@ export default function AvailabilityPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [toggling, setToggling] = useState(false);
   const [cancellingDay, setCancellingDay] = useState<string | null>(null);
+  const [weekIndex, setWeekIndex] = useState(0);
   // Slot (or "day:<date>") with an action in flight, to disable its button.
   const [busyKey, setBusyKey] = useState<string | null>(null);
   // When slots were last loaded; decides which slots count as future.
@@ -178,11 +187,18 @@ export default function AvailabilityPage() {
       byDate.get(dateKey)?.set(timeKey, slot);
     }
 
-    const dates = Array.from(byDate.keys()).sort((a, b) => a.localeCompare(b));
+    const allDates = Array.from(byDate.keys()).sort((a, b) => a.localeCompare(b));
     const times = Array.from(allTimes).sort((a, b) => a.localeCompare(b));
 
-    return { dates, times, byDate };
-  }, [filteredSlots]);
+    // A month of slots is too wide for one table: page through it a week
+    // (Monday to Saturday) at a time.
+    const weekStarts = Array.from(new Set(allDates.map(weekStartOf))).sort();
+    const weekCount = Math.max(1, weekStarts.length);
+    const currentWeek = weekStarts[Math.min(weekIndex, weekCount - 1)];
+    const dates = allDates.filter((d) => weekStartOf(d) === currentWeek);
+
+    return { dates, times, byDate, weekCount, currentWeek };
+  }, [filteredSlots, weekIndex]);
 
   // Slots a "Cancel day" would touch, from all slots (not just the filtered view),
   // keyed the same way as the calendar columns. Completed visits are left alone.
@@ -358,7 +374,7 @@ export default function AvailabilityPage() {
       <div>
         <h1 className="text-2xl font-semibold">Manage Availability</h1>
         <p className="text-sm text-muted-foreground">
-          Toggle your day planning and keep an auto-managed 3-day rolling slot window.
+          Toggle your day planning. Slots are kept open automatically for the next 30 days.
         </p>
       </div>
 
@@ -389,7 +405,7 @@ export default function AvailabilityPage() {
           </span>
         </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Rule set: 10:30 AM to 4:30 PM, 30-minute slots, 1:30 PM to 2:30 PM break, Sundays closed, rolling 3-day window.
+          Rule set: 10:30 AM to 4:30 PM, 30-minute slots, 1:30 PM to 2:30 PM break, Sundays closed, rolling 30-day window.
         </p>
       </div>
 
@@ -403,7 +419,34 @@ export default function AvailabilityPage() {
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-sm font-semibold">Calendar Slots</h2>
-            <p className="text-xs text-muted-foreground">Table view by day and time.</p>
+            <p className="text-xs text-muted-foreground">
+              {calendarData.currentWeek
+                ? `Week of ${formatDayLabel(calendarData.currentWeek)} · week ${Math.min(weekIndex, calendarData.weekCount - 1) + 1} of ${calendarData.weekCount}`
+                : "Table view by day and time."}
+            </p>
+            <div className="mt-2 flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setWeekIndex((w) => Math.max(0, w - 1))}
+                disabled={weekIndex === 0}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
+              >
+                <ChevronLeft className="size-3.5" />Previous week
+              </button>
+              <button
+                type="button"
+                onClick={() => setWeekIndex((w) => Math.min(calendarData.weekCount - 1, w + 1))}
+                disabled={weekIndex >= calendarData.weekCount - 1}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs disabled:opacity-40"
+              >
+                Next week<ChevronRight className="size-3.5" />
+              </button>
+              {weekIndex > 0 && (
+                <button type="button" onClick={() => setWeekIndex(0)} className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground">
+                  This week
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <select

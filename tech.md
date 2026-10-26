@@ -237,7 +237,8 @@ under "Must fix first (security)".
 | Rule | Where |
 |---|---|
 | Clinic hours 10:30 AM to 4:30 PM, 30-minute slots, 1:30 to 2:30 PM break, Sundays closed | `postgres_service.py` constants |
-| Rolling 3-day slot window, generated on demand | `_ensure_doctor_rolling_slots` |
+| Rolling 30-day slot window, generated on demand in one batch insert | `_ensure_doctor_rolling_slots` (`ROLLING_WINDOW_DAYS`) |
+| Who cancelled / rescheduled an appointment, and where it moved | `appointments.cancelled_by`, `cancelled_at`, `rescheduled_to_appointment_id` (migration 020) |
 | Slot hold → booking (atomic, prevents double booking) | `reserve_availability_slot`, `book_reserved_slot` SQL functions |
 | Blood compatibility: red-cell rules for whole blood, PRBC and platelets; reversed ABO rules for plasma | `compatible_donor_blood_types` |
 | Donor cooldown: 90 days (male), 120 days (female) | `list_campaign_eligible_donors` |

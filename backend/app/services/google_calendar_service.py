@@ -38,7 +38,7 @@ async def create_calendar_event(
     start_iso: str,
     end_iso: str | None = None,
     description: str | None = None,
-    timezone: str = "America/New_York",
+    timezone: str | None = None,
     attendee_email: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -50,13 +50,15 @@ async def create_calendar_event(
         start_iso: ISO-8601 datetime for the event start.
         end_iso: ISO-8601 datetime for event end (defaults to start + 30 min).
         description: Optional event body text.
-        timezone: IANA timezone string.
+        timezone: IANA timezone string (defaults to CLINIC_TIMEZONE).
         attendee_email: Optional patient email to invite.
 
     Returns:
         The Google Calendar event resource (includes ``id``, ``htmlLink``).
     """
     google_token = _get_google_token()
+    # Naive start times are clinic-local, so the event must use the clinic's zone.
+    timezone = timezone or settings.clinic_timezone
 
     # Default to 30-minute appointment if no end time
     if not end_iso:

@@ -18,11 +18,29 @@ import { CalendarClock, Loader2, Search, Stethoscope, X } from "lucide-react";
 
 type DoctorSlotsMap = Record<string, DoctorAvailabilitySlot[]>;
 
-function formatDateTime(value?: string | null) {
-  if (!value) return "-";
+function formatTime(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function groupSlotsByDay(slots: DoctorAvailabilitySlot[]) {
+  const days = new Map<string, { key: string; weekday: string; label: string; slots: DoctorAvailabilitySlot[] }>();
+  for (const slot of slots) {
+    const date = new Date(slot.slot_start);
+    if (Number.isNaN(date.getTime())) continue;
+    const key = date.toLocaleDateString("en-CA"); // YYYY-MM-DD in the viewer's timezone
+    if (!days.has(key)) {
+      days.set(key, {
+        key,
+        weekday: date.toLocaleDateString(undefined, { weekday: "short" }),
+        label: date.toLocaleDateString(undefined, { day: "numeric", month: "short" }),
+        slots: [],
+      });
+    }
+    days.get(key)?.slots.push(slot);
+  }
+  return Array.from(days.values()).sort((a, b) => a.key.localeCompare(b.key));
 }
 
 export default function BookingClient() {
@@ -39,6 +57,7 @@ export default function BookingClient() {
   const [slotsLoadingDoctorId, setSlotsLoadingDoctorId] = useState<string | null>(null);
   const [consultationType, setConsultationType] = useState("video");
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedDayByDoctor, setSelectedDayByDoctor] = useState<Record<string, string>>({});
   const [bookingSlotId, setBookingSlotId] = useState<string | null>(null);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
 
@@ -253,21 +272,58 @@ export default function BookingClient() {
                       {slots.length === 0 ? (
                         <p className="text-sm text-[#6E6057]">No slots available for this doctor.</p>
                       ) : (
-                        slots.map((slot) => (
-                          <div key={slot.id} className="flex flex-col gap-2 rounded-md border border-border px-3 py-2 md:flex-row md:items-center md:justify-between">
-                            <span className="inline-flex items-center gap-1 text-sm text-[#6E6057]">
-                              <CalendarClock className="size-4" />
-                              {formatDateTime(slot.slot_start)}
-                            </span>
-                            <Button
-                              size="sm"
-                              disabled={bookingSlotId === slot.id}
-                              onClick={() => handleBook(slot.id, doctor.id)}
-                            >
-                              {bookingSlotId === slot.id ? "Saving..." : appointmentId ? "Reschedule Here" : "Confirm Booking"}
-                            </Button>
-                          </div>
-                        ))
+                        (() => {
+                          // A month of slots: pick a day first, then a time.
+                          const days = groupSlotsByDay(slots);
+                          const activeDay = days.find((d) => d.key === selectedDayByDoctor[doctor.id]) || days[0];
+                          return (
+                            <div className="space-y-3">
+                              <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Choose a day">
+                                {days.map((d) => {
+                                  const active = d.key === activeDay.key;
+                                  return (
+                                    <button
+                                      key={d.key}
+                                      type="button"
+                                      role="tab"
+                                      aria-selected={active}
+                                      onClick={() => setSelectedDayByDoctor((prev) => ({ ...prev, [doctor.id]: d.key }))}
+                                      className={`shrink-0 rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
+                                        active ? "border-primary bg-primary/10 text-foreground" : "border-border text-[#6E6057] hover:border-primary/40"
+                                      }`}
+                                    >
+                                      <span className="block font-medium">{d.weekday}</span>
+                                      <span className="block">{d.label}</span>
+                                      <span className="block text-[10px] opacity-80">{d.slots.length} open</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-5">
+                                {activeDay.slots.map((slot) => (
+                                  <Button
+                                    key={slot.id}
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={bookingSlotId !== null}
+                                    onClick={() => handleBook(slot.id, doctor.id)}
+                                    title={appointmentId ? "Move my appointment here" : "Book this time"}
+                                  >
+                                    {bookingSlotId === slot.id ? (
+                                      <Loader2 className="size-3.5 animate-spin" />
+                                    ) : (
+                                      <CalendarClock className="size-3.5" />
+                                    )}
+                                    {formatTime(slot.slot_start)}
+                                  </Button>
+                                ))}
+                              </div>
+                              <p className="text-[11px] text-[#6E6057]">
+                                {appointmentId ? "Tap a time to move your appointment there." : "Tap a time to book it."}
+                              </p>
+                            </div>
+                          );
+                        })()
                       )}
                     </>
                   )}
