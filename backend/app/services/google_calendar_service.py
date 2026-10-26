@@ -48,7 +48,9 @@ OAUTH_SCOPES = [
 STATE_MAX_AGE_SECONDS = 600
 BUSY_CACHE_SECONDS = 120
 
-_sync_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="gcal-sync")
+# One worker: syncs run in order, so two syncs of one appointment can't both
+# see "no event yet" and create duplicates.
+_sync_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gcal-sync")
 _busy_cache: dict[tuple[str, str, str], tuple[float, list[tuple[datetime, datetime]]]] = {}
 
 

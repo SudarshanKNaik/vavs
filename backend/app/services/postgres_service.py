@@ -788,6 +788,7 @@ def set_doctor_availability(
                     ),
                 )
             moved_count += 1
+            _calendar_sync(appointment["appointment_id"])
 
         with _cursor() as cur:
             cur.execute(
@@ -1000,7 +1001,11 @@ def _finalize_reserved_slot_booking(
             """,
             (slot_id, patient_id, patient_id, slot_id, consultation_type, notes),
         )
-        return cur.fetchone()
+        appointment = cur.fetchone()
+    # Every new booking (portal, reschedule, AI call) passes through here.
+    if appointment:
+        _calendar_sync(appointment["id"])
+    return appointment
 
 
 def get_availability_slot(slot_id: str) -> dict[str, Any] | None:
@@ -1880,7 +1885,6 @@ def reschedule_appointment_for_patient_portal(
         cancelled_by="patient",
         rescheduled_to_appointment_id=str(new_appointment["id"]),
     )
-    _calendar_sync(new_appointment["id"])
     doctor = get_doctor(str(new_appointment["doctor_id"]))
 
     with _cursor() as cur:
