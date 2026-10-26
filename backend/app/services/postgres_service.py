@@ -1597,6 +1597,16 @@ def update_appointment(appointment_id: str, payload: dict[str, Any]) -> dict[str
     )
 
 
+def _calendar_sync(*appointment_ids: Any) -> None:
+    """Mirror these appointments to the doctor's Google Calendar (background, best-effort)."""
+    try:
+        from app.services.google_calendar_service import queue_appointment_sync
+
+        queue_appointment_sync(*appointment_ids)
+    except Exception as exc:  # never let calendar sync break a booking
+        logger.warning("Could not queue Google Calendar sync: %s", exc)
+
+
 def cancel_appointment(
     appointment_id: str,
     cancel_note: str | None = None,
@@ -1631,6 +1641,7 @@ def cancel_appointment(
         if rescheduled_to_appointment_id:
             changes["rescheduled_to_appointment_id"] = rescheduled_to_appointment_id
     updated = update_appointment(appointment_id, changes)
+    _calendar_sync(appointment_id)
 
     if cancelled_by == "doctor":
         slot = get_availability_slot(str(appointment["slot_id"])) or {}
@@ -1782,6 +1793,8 @@ def cancel_doctor_slots(
                         (appt["patient_id"], message),
                     )
 
+    _calendar_sync(*(appt["id"] for appt in cancelled_appointments))
+
     return _json_safe(
         {
             "cancelled_slots": len(target_ids),
@@ -1867,6 +1880,7 @@ def reschedule_appointment_for_patient_portal(
         cancelled_by="patient",
         rescheduled_to_appointment_id=str(new_appointment["id"]),
     )
+    _calendar_sync(new_appointment["id"])
     doctor = get_doctor(str(new_appointment["doctor_id"]))
 
     with _cursor() as cur:

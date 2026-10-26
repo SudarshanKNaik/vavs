@@ -295,17 +295,31 @@ def sync_appointment(appointment_id: str) -> None:
     headers = {"Authorization": f"Bearer {token}"}
     events_url = f"{GCAL_BASE}/calendars/{calendar_id}/events"
     active = appt["status"] in {"booked", "confirmed"}
+    tz = str(CLINIC_TZ)
+    times = {
+        "start": {"dateTime": appt["slot_start"].astimezone(CLINIC_TZ).isoformat(), "timeZone": tz},
+        "end": {"dateTime": appt["slot_end"].astimezone(CLINIC_TZ).isoformat(), "timeZone": tz},
+    }
 
-    if active and not appt["google_event_id"]:
-        tz = str(CLINIC_TZ)
+    if active and appt["google_event_id"]:
+        # The appointment kept its id but may have moved to another slot (the
+        # "Set Not Available" toggle does this), so keep the event's time current.
+        resp = httpx.patch(f"{events_url}/{appt['google_event_id']}", json=times, headers=headers, timeout=15)
+        if resp.status_code in {404, 410}:
+            # Deleted in Google by the doctor; recreate it below on the next sync.
+            with _cursor() as cur:
+                cur.execute("UPDATE appointments SET google_event_id = NULL WHERE id = %s", (appt["id"],))
+        elif resp.status_code >= 400:
+            _record_error(doctor_id, f"Update event failed: {resp.text[:300]}")
+            raise RuntimeError(f"Google Calendar update failed {resp.status_code}")
+    elif active:
         body = {
             "summary": f"Appointment: {appt['patient_name'] or 'Patient'}",
             "description": (
                 f"{(appt['consultation_type'] or '').replace('_', ' ').title()} consultation booked via CareSync AI.\n"
                 f"Patient phone: {appt['patient_phone'] or '-'}"
             ),
-            "start": {"dateTime": appt["slot_start"].astimezone(CLINIC_TZ).isoformat(), "timeZone": tz},
-            "end": {"dateTime": appt["slot_end"].astimezone(CLINIC_TZ).isoformat(), "timeZone": tz},
+            **times,
             "reminders": {"useDefault": True},
         }
         resp = httpx.post(events_url, json=body, headers=headers, timeout=15)
