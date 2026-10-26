@@ -10,6 +10,7 @@ Returns a list of step-log dicts that gets stored in call_logs.execution_log.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timezone
 from typing import Any
@@ -641,7 +642,9 @@ async def _handle_send_sms(node: dict, context: dict) -> tuple[bool, dict]:
     if not phone:
         return False, _step_log(node, "error", "No patient phone number available")
 
-    if not (settings.twilio_account_sid and settings.twilio_auth_token and settings.twilio_phone_number):
+    from app.services.sms_service import send_sms_sync, sms_configured
+
+    if not sms_configured():
         return False, _step_log(
             node,
             "error",
@@ -650,14 +653,10 @@ async def _handle_send_sms(node: dict, context: dict) -> tuple[bool, dict]:
         )
 
     try:
-        from twilio.rest import Client as TwilioClient
-
-        twilio = TwilioClient(settings.twilio_account_sid, settings.twilio_auth_token)
-        msg = twilio.messages.create(
-            to=phone, from_=settings.twilio_phone_number, body=body
-        )
+        # Patients' phones are stored without +91; Twilio needs E.164.
+        sid = await asyncio.to_thread(send_sms_sync, phone, body)
         return True, _step_log(
-            node, "ok", f"SMS sent: {msg.sid}", extra={"message_sid": msg.sid}
+            node, "ok", f"SMS sent: {sid}", extra={"message_sid": sid}
         )
     except Exception as exc:
         logger.exception("Twilio SMS failed")

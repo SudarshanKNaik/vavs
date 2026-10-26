@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import smtplib
-from concurrent.futures import ThreadPoolExecutor
 from email.message import EmailMessage
 from typing import Any
 
@@ -93,10 +92,8 @@ async def send_notification_email(to_email: str, subject: str, message: str) -> 
 
 
 # ---------------------------------------------------------------------------
-# Appointment confirmation emails
+# Appointment confirmation emails (sent via notification_service)
 # ---------------------------------------------------------------------------
-
-_email_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="booking-email")
 
 
 def _appointment_email_context(appointment_id: str) -> dict[str, Any] | None:
@@ -201,18 +198,3 @@ def send_appointment_confirmation_sync(appointment_id: str, rescheduled_from: st
     _send_email_sync(ctx["patient_email"], subject, html, text)
     logger.info("Booking email sent for appointment %s", appointment_id)
     return True
-
-
-def _send_confirmation_safely(appointment_id: str, rescheduled_from: str | None) -> None:
-    try:
-        send_appointment_confirmation_sync(appointment_id, rescheduled_from)
-    except Exception:
-        logger.exception("Booking confirmation email failed for appointment %s", appointment_id)
-
-
-def queue_appointment_confirmation(appointment_id: Any, rescheduled_from: Any = None) -> None:
-    """Send the confirmation email in the background; never delays or fails a booking."""
-    if appointment_id:
-        _email_executor.submit(
-            _send_confirmation_safely, str(appointment_id), str(rescheduled_from) if rescheduled_from else None
-        )

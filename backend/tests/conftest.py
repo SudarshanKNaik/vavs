@@ -25,6 +25,9 @@ TEST_DATABASE_URL = os.environ.get(
 # Must be set before the app (and its Settings) is imported.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["FOLLOW_UP_CRON_ENABLED"] = "false"
+# Never send real patient SMS/email from tests; notification tests opt in with fakes.
+os.environ["NOTIFY_PATIENTS_SMS"] = "false"
+os.environ["NOTIFY_PATIENTS_EMAIL"] = "false"
 sys.path.insert(0, str(BACKEND_ROOT))
 
 

@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     follow_up_cron_max_attempts: int = 3
     follow_up_cron_batch_size: int = 10
 
+    # Patient SMS (Twilio) + email notifications for bookings, reschedules
+    # and cancellations. Each channel also needs its credentials above.
+    notify_patients_sms: bool = True
+    notify_patients_email: bool = True
+
     # NGO portal
     ngo_session_ttl_hours: int = 12
     ngo_csv_max_bytes: int = 2 * 1024 * 1024

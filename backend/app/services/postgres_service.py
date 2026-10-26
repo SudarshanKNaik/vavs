@@ -997,6 +997,9 @@ def set_doctor_availability(
                 )
             moved_count += 1
             _calendar_sync(appointment["appointment_id"])
+            _patient_notice(
+                appointment["appointment_id"], "moved", previous_start=appointment["slot_start"]
+            )
 
         with _cursor() as cur:
             cur.execute(
@@ -1216,7 +1219,7 @@ def _finalize_reserved_slot_booking(
     if appointment:
         _calendar_sync(appointment["id"])
         if send_confirmation:
-            _booking_email(appointment["id"])
+            _booking_notice(appointment["id"])
     return appointment
 
 
@@ -1825,14 +1828,23 @@ def _drop_google_busy(doctor_id: str, slots: list[dict[str, Any]]) -> list[dict[
         return slots
 
 
-def _booking_email(appointment_id: Any, rescheduled_from: Any = None) -> None:
-    """Email the patient their confirmed (or rescheduled) appointment, in the background."""
-    try:
-        from app.services.smtp_service import queue_appointment_confirmation
+def _booking_notice(appointment_id: Any, rescheduled_from: Any = None) -> None:
+    """SMS + email the patient their confirmed (or rescheduled) appointment, in the background."""
+    _patient_notice(
+        appointment_id,
+        "rescheduled" if rescheduled_from else "booked",
+        rescheduled_from=rescheduled_from,
+    )
 
-        queue_appointment_confirmation(appointment_id, rescheduled_from)
-    except Exception as exc:  # never let email break a booking
-        logger.warning("Could not queue booking email: %s", exc)
+
+def _patient_notice(appointment_id: Any, event: str, **details: Any) -> None:
+    """Queue a patient SMS/email for an appointment change (best-effort)."""
+    try:
+        from app.services.notification_service import queue_appointment_notification
+
+        queue_appointment_notification(appointment_id, event, **details)
+    except Exception as exc:  # never let a notification break the change
+        logger.warning("Could not queue patient notification: %s", exc)
 
 
 def _calendar_sync(*appointment_ids: Any) -> None:
@@ -1880,6 +1892,8 @@ def cancel_appointment(
             changes["rescheduled_to_appointment_id"] = rescheduled_to_appointment_id
     updated = update_appointment(appointment_id, changes)
     _calendar_sync(appointment_id)
+    if not rescheduled_to_appointment_id:
+        _patient_notice(appointment_id, "cancelled", cancelled_by=cancelled_by)
 
     if cancelled_by == "doctor":
         slot = get_availability_slot(str(appointment["slot_id"])) or {}
@@ -2032,6 +2046,8 @@ def cancel_doctor_slots(
                     )
 
     _calendar_sync(*(appt["id"] for appt in cancelled_appointments))
+    for appt in cancelled_appointments:
+        _patient_notice(appt["id"], "cancelled", cancelled_by="doctor", reason=reason)
 
     return _json_safe(
         {
@@ -2119,7 +2135,7 @@ def reschedule_appointment_for_patient_portal(
         cancelled_by="patient",
         rescheduled_to_appointment_id=str(new_appointment["id"]),
     )
-    _booking_email(new_appointment["id"], rescheduled_from=current["id"])
+    _booking_notice(new_appointment["id"], rescheduled_from=current["id"])
     doctor = get_doctor(str(new_appointment["doctor_id"]))
 
     with _cursor() as cur:
