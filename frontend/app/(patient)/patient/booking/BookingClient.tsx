@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocalAuth } from "@/lib/local-auth";
 import {
   bookPatientPortalSlot,
@@ -14,7 +14,7 @@ import {
   type DoctorListItem,
 } from "@/services/api";
 import { Button } from "@/components/ui/button";
-import { CalendarClock, Loader2, Stethoscope } from "lucide-react";
+import { CalendarClock, Loader2, Search, Stethoscope, X } from "lucide-react";
 
 type DoctorSlotsMap = Record<string, DoctorAvailabilitySlot[]>;
 
@@ -37,6 +37,7 @@ export default function BookingClient() {
   const [expandedDoctorId, setExpandedDoctorId] = useState<string | null>(null);
   const [slotsLoadingDoctorId, setSlotsLoadingDoctorId] = useState<string | null>(null);
   const [consultationType, setConsultationType] = useState("video");
+  const [searchQuery, setSearchQuery] = useState("");
   const [bookingSlotId, setBookingSlotId] = useState<string | null>(null);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
 
@@ -74,7 +75,15 @@ export default function BookingClient() {
     };
   }, [authUserId, isAuthenticated]);
 
-  const availableDoctors = doctors;
+  const availableDoctors = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return doctors;
+    return doctors.filter((doctor) =>
+      [doctor.name, doctor.specialty, doctor.language].some((field) =>
+        (field || "").toLowerCase().includes(query)
+      )
+    );
+  }, [doctors, searchQuery]);
 
   const handleSeeSlots = useCallback(async (doctorId: string) => {
     const isAlreadyOpen = expandedDoctorId === doctorId;
@@ -160,8 +169,30 @@ export default function BookingClient() {
         <Link href="/patient"><Button variant="outline">Back to Portal</Button></Link>
       </div>
 
-      <div className="grid gap-4 rounded-2xl border border-border/80 bg-card p-4 shadow-sm md:grid-cols-1">
+      <div className="grid gap-4 rounded-2xl border border-border/80 bg-card p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_200px]">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#6E6057]" />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by doctor name, specialty or language"
+            aria-label="Search doctors"
+            className="w-full rounded-lg border border-border/80 bg-background py-2 pl-9 pr-9 text-sm placeholder:text-[#8C7B70] focus:border-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/20 [&::-webkit-search-cancel-button]:hidden"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-[#6E6057] hover:text-foreground"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
         <select
+          aria-label="Consultation type"
           value={consultationType}
           onChange={(e) => setConsultationType(e.target.value)}
           className="rounded-lg border border-border/80 bg-background px-3 py-2 text-sm focus:border-primary/30 focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -181,7 +212,11 @@ export default function BookingClient() {
       <div className="mt-6 space-y-4">
         {availableDoctors.length === 0 ? (
           <article className="rounded-2xl border border-border/80 bg-card p-4 shadow-sm">
-            <p className="text-sm text-[#6E6057]">No doctors found right now.</p>
+            <p className="text-sm text-[#6E6057]">
+              {searchQuery.trim()
+                ? `No doctors match "${searchQuery.trim()}".`
+                : "No doctors found right now."}
+            </p>
           </article>
         ) : availableDoctors.map((doctor) => {
           const isExpanded = expandedDoctorId === doctor.id;
