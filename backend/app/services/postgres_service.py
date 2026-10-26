@@ -1281,7 +1281,6 @@ def create_appointment_from_call_confirmation(
     if local_start_dt.tzinfo is None:
         local_start_dt = local_start_dt.replace(tzinfo=CLINIC_TZ)
     start_dt = local_start_dt.astimezone(timezone.utc)
-    end_dt = start_dt + timedelta(minutes=30)
 
     with _cursor() as cur:
         cur.execute(
