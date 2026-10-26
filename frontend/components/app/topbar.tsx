@@ -36,6 +36,7 @@ const PAGES: SearchResult[] = [
   { type: "page", id: "dashboard", title: "Dashboard", subtitle: "Overview", href: "/dashboard" },
   { type: "page", id: "triggers", title: "Workflows & Triggers", subtitle: "Manage workflows", href: "/triggers" },
   { type: "page", id: "patients", title: "Patients", subtitle: "Patient directory", href: "/patients" },
+  { type: "page", id: "outbreak", title: "Outbreak Watch", subtitle: "Symptom clusters by area", href: "/outbreak-watch" },
   { type: "page", id: "calls", title: "Call Log", subtitle: "Execution history", href: "/calls" },
   { type: "page", id: "appointments", title: "Appointments", subtitle: "Scheduled visits", href: "/appointments" },
   { type: "page", id: "audit", title: "Audit Log", subtitle: "Event trail", href: "/audit-log" },

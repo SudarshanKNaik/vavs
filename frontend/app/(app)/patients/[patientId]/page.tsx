@@ -46,6 +46,7 @@ import {
   Pill,
   Upload,
   Loader2,
+  MapPin,
 } from "lucide-react";
 
 const riskStyles: Record<string, string> = {
@@ -77,7 +78,7 @@ export default function PatientDetailPage({
 
   const [profileForm, setProfileForm] = useState({
     name: "", phone: "", dob: "", mrn: "", insurance: "",
-    primary_physician: "", last_visit: "", risk_level: "low", notes: "",
+    primary_physician: "", last_visit: "", risk_level: "low", notes: "", locality: "",
   });
 
   const [medications, setMedications] = useState<any[]>([]);
@@ -140,6 +141,7 @@ export default function PatientDetailPage({
         last_visit: p.last_visit || "",
         risk_level: p.risk_level || "low",
         notes: p.notes || "",
+        locality: p.locality || "",
       });
     } catch {
       setPatient(null);
@@ -393,6 +395,7 @@ export default function PatientDetailPage({
                 <InfoItem icon={Calendar} label="Last Visit" value={patient.last_visit || "—"} />
                 <InfoItem icon={Stethoscope} label="Primary Physician" value={patient.primary_physician || "—"} />
                 <InfoItem icon={Shield} label="Insurance" value={patient.insurance || "—"} />
+                <InfoItem icon={MapPin} label="Locality" value={patient.locality || "—"} />
               </div>
             )}
           </div>
@@ -417,6 +420,7 @@ export default function PatientDetailPage({
               <FormField label="Insurance" value={profileForm.insurance} onChange={(v) => setProfileForm((f) => ({ ...f, insurance: v }))} placeholder="e.g. Blue Cross Blue Shield" />
               <FormField label="Primary Physician" value={profileForm.primary_physician} onChange={(v) => setProfileForm((f) => ({ ...f, primary_physician: v }))} placeholder="e.g. Dr. Smith" />
               <FormField label="Last Visit" value={profileForm.last_visit} onChange={(v) => setProfileForm((f) => ({ ...f, last_visit: v }))} type="date" />
+              <FormField label="Locality" value={profileForm.locality} onChange={(v) => setProfileForm((f) => ({ ...f, locality: v }))} placeholder="e.g. Old Hubli, Keshwapur" />
               <div>
                 <label className="block text-xs font-medium text-muted-foreground mb-1">Risk Level</label>
                 <select

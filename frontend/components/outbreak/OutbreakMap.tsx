@@ -52,8 +52,6 @@ export default function OutbreakMap({ points, selected, onSelect }: Props) {
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
   const fittedRef = useRef(false);
-  const onSelectRef = useRef(onSelect);
-  onSelectRef.current = onSelect;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
@@ -120,7 +118,7 @@ export default function OutbreakMap({ points, selected, onSelect }: Props) {
         fillOpacity: point.cases > 0 ? 0.85 : 0.4,
       })
         .bindTooltip(tooltipContent(point), { direction: "top", offset: [0, -radius], opacity: 1, className: "ow-tooltip" })
-        .on("click", () => onSelectRef.current(point.locality))
+        .on("click", () => onSelect(point.locality))
         .addTo(layer);
 
       if (point.cases > 0) {
@@ -139,7 +137,7 @@ export default function OutbreakMap({ points, selected, onSelect }: Props) {
       map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lon] as [number, number])), { padding: [48, 48] });
       fittedRef.current = true;
     }
-  }, [points, selected]);
+  }, [points, selected, onSelect]);
 
   return <div ref={containerRef} className="h-full min-h-[420px] w-full" aria-label="Map of symptom reports by area" />;
 }
