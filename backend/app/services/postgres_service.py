@@ -116,7 +116,8 @@ SLOT_END_TIME = time(16, 30)
 LUNCH_BREAK_START = time(13, 30)
 LUNCH_BREAK_END = time(14, 30)
 SLOT_DURATION_MINUTES = 30
-ROLLING_WINDOW_DAYS = 3
+# Doctors' slots are kept open a full month ahead (was 3 days).
+ROLLING_WINDOW_DAYS = 30
 
 
 def _clinic_timezone():
@@ -187,23 +188,31 @@ def _ensure_doctor_rolling_slots(doctor_id: str, from_day: date | None = None) -
             (doctor_id, target_days),
         )
 
+        # One statement for the whole window: with a month of slots (~260 per
+        # doctor) a query per slot made every slot lookup slow.
+        starts: list[datetime] = []
+        ends: list[datetime] = []
         for day in target_days:
             for slot_start, slot_end in _iter_schedule_slots_for_day(day):
-                cur.execute(
-                    """
-                    INSERT INTO availability_slots (
-                        doctor_id,
-                        slot_start,
-                        slot_end,
-                        status,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (%s, %s, %s, 'available', now(), now())
-                    ON CONFLICT (doctor_id, slot_start, slot_end) DO NOTHING
-                    """,
-                    (doctor_id, slot_start, slot_end),
-                )
+                starts.append(slot_start)
+                ends.append(slot_end)
+
+        cur.execute(
+            """
+            INSERT INTO availability_slots (
+                doctor_id,
+                slot_start,
+                slot_end,
+                status,
+                created_at,
+                updated_at
+            )
+            SELECT %s, s.slot_start, s.slot_end, 'available', now(), now()
+            FROM unnest(%s::timestamptz[], %s::timestamptz[]) AS s(slot_start, slot_end)
+            ON CONFLICT (doctor_id, slot_start, slot_end) DO NOTHING
+            """,
+            (doctor_id, starts, ends),
+        )
 
 
 def _find_next_rebooking_slot(
