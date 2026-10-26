@@ -1,5 +1,5 @@
 -- ============================================================
--- Migration 029: Outbreak Watch places (any city)
+-- Migration 030: Outbreak Watch places (any city)
 -- ============================================================
 -- Caches OpenStreetMap lookups so each locality or city is
 -- geocoded once (Nominatim allows at most 1 request a second).

@@ -1,5 +1,5 @@
 -- ============================================================
--- Migration 028: Outbreak Watch (symptom surveillance)
+-- Migration 029: Outbreak Watch (symptom surveillance)
 -- ============================================================
 -- Symptoms patients mention on AI calls are stored per call,
 -- tagged with the patient's locality, and grouped into syndromes

@@ -13,6 +13,8 @@ ORIGINAL_PATIENT_KEYS = {
     "primary_physician", "last_visit", "risk_level", "notes", "created_at", "updated_at",
     # Added by migration 026: the language the patient's AI calls are held in.
     "preferred_language",
+    # Added by migration 029: the patient's area, used by Outbreak Watch.
+    "locality",
 }
 
 
