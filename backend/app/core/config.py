@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     # and cancellations. Each channel also needs its credentials above.
     notify_patients_sms: bool = True
     notify_patients_email: bool = True
+    # Blood requests: SMS donors/organizations/contact person, email the doctor.
+    notify_blood_sms: bool = True
+    notify_blood_email: bool = True
 
     # NGO portal
     ngo_session_ttl_hours: int = 12

@@ -8,6 +8,7 @@ import {
   listBloodRequests,
   listPatients,
   type BloodCampaignAttempt,
+  type BloodCampaignMessage,
   type BloodComponent,
   type BloodRequestItem,
   type BloodSource,
@@ -48,6 +49,36 @@ const ATTEMPT_LABELS: Record<string, { label: string; tone: string }> = {
   hangup: { label: "Hung up", tone: "text-warning" },
   failed: { label: "Failed", tone: "text-destructive" },
 };
+
+const MESSAGE_LABELS: Record<BloodCampaignMessage["kind"], string> = {
+  donor_accepted: "Details texted",
+  org_accepted: "Details texted",
+  donor_missed: "Missed call: appeal texted",
+  contact_update: "Contact person texted",
+  contact_summary: "Contact person texted: nobody confirmed",
+  doctor_summary: "Summary emailed to you",
+};
+
+const MESSAGE_TONES: Record<BloodCampaignMessage["status"], string> = {
+  pending: "text-muted-foreground",
+  sent: "text-success",
+  failed: "text-destructive",
+  skipped: "text-muted-foreground",
+};
+
+function MessageBadge({ message }: { message: BloodCampaignMessage }) {
+  const status =
+    message.status === "sent" ? "" : message.status === "pending" ? " (sending…)" : ` (${message.status})`;
+  return (
+    <span
+      className={`text-[10px] ${MESSAGE_TONES[message.status]}`}
+      title={message.detail ? `${message.recipient}: ${message.detail}` : message.recipient}
+    >
+      {message.channel === "email" ? "✉" : "💬"} {MESSAGE_LABELS[message.kind] || message.kind}
+      {status}
+    </span>
+  );
+}
 
 // Hospital and contact details rarely change between requests, so remember
 // them per doctor in this browser to save retyping. Best-effort only.
@@ -174,12 +205,17 @@ function Field({
 
 function RequestCalls({ requestId, live }: { requestId: string; live: boolean }) {
   const [attempts, setAttempts] = useState<BloodCampaignAttempt[]>([]);
+  const [messages, setMessages] = useState<BloodCampaignMessage[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     const load = () =>
       getBloodCampaignStatus(requestId)
-        .then((detail) => !cancelled && setAttempts(detail.attempts))
+        .then((detail) => {
+          if (cancelled) return;
+          setAttempts(detail.attempts);
+          setMessages(detail.messages || []);
+        })
         .catch(() => undefined);
     load();
     if (!live) return () => { cancelled = true; };
@@ -191,27 +227,47 @@ function RequestCalls({ requestId, live }: { requestId: string; live: boolean })
   }, [requestId, live]);
 
   if (attempts.length === 0) return null;
+  const requestMessages = messages.filter((m) => !m.attempt_id);
   return (
-    <ul className="mt-3 divide-y divide-border rounded-md border border-border text-xs">
-      {attempts.map((a) => {
-        const state = ATTEMPT_LABELS[a.status] || { label: a.status, tone: "text-muted-foreground" };
-        return (
-          <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
-            <span>
-              {a.donor_name || "Unknown"}
-              <span className="ml-2 text-[10px] uppercase text-muted-foreground">
-                {a.target_type === "org" ? "organization" : "donor"}
-                {a.attempt_number && a.attempt_number > 1 ? ` · retry` : ""}
-              </span>
-            </span>
-            <span className={state.tone}>
-              {state.label}
-              {a.units_confirmed ? ` · ${a.units_confirmed} unit(s)` : ""}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
+    <>
+      <ul className="mt-3 divide-y divide-border rounded-md border border-border text-xs">
+        {attempts.map((a) => {
+          const state = ATTEMPT_LABELS[a.status] || { label: a.status, tone: "text-muted-foreground" };
+          const attemptMessages = messages.filter((m) => m.attempt_id === a.id);
+          return (
+            <li key={a.id} className="px-3 py-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  {a.donor_name || "Unknown"}
+                  <span className="ml-2 text-[10px] uppercase text-muted-foreground">
+                    {a.target_type === "org" ? "organization" : "donor"}
+                    {a.attempt_number && a.attempt_number > 1 ? ` · retry` : ""}
+                  </span>
+                </span>
+                <span className={state.tone}>
+                  {state.label}
+                  {a.units_confirmed ? ` · ${a.units_confirmed} unit(s)` : ""}
+                </span>
+              </div>
+              {attemptMessages.length > 0 && (
+                <div className="mt-0.5 flex flex-wrap gap-x-3">
+                  {attemptMessages.map((m) => (
+                    <MessageBadge key={m.id} message={m} />
+                  ))}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {requestMessages.length > 0 && (
+        <div className="mt-1.5 flex flex-wrap gap-x-3 px-1">
+          {requestMessages.map((m) => (
+            <MessageBadge key={m.id} message={m} />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -554,7 +610,8 @@ export default function BloodRequestsPage() {
                 className={inputClass}
               />
             </Field>
-            <Field label="Contact phone" required>
+            <Field label="Contact phone" required hint="Texted whenever someone says yes; shared with donors who agree.">
+
               <input
                 required
                 type="tel"

@@ -14,6 +14,10 @@ from openpyxl import load_workbook
 
 import app.services.postgres_service as db
 from app.core.config import settings
+from app.services.blood_notification_service import (
+    queue_attempt_messages,
+    queue_campaign_summary,
+)
 from app.services.elevenlabs_service import (
     get_conversation,
     get_conversation_by_call_sid,
@@ -815,6 +819,7 @@ async def _process_donor_attempt(
             if units is not None:
                 update["units_confirmed"] = units
             db.update_campaign_attempt(attempt_id, update)
+            queue_attempt_messages(attempt_id)
             return {
                 "accepted": accepted,
                 "is_org": is_org,
@@ -832,6 +837,7 @@ async def _process_donor_attempt(
                 "updated_at": _utc_now_iso(),
             },
         )
+        queue_attempt_messages(attempt_id)
         return {"accepted": False, "is_org": is_org, "donor_id": str(donor["id"]), "attempt_id": attempt_id}
 
     except Exception as exc:
@@ -885,6 +891,7 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
                     "updated_at": _utc_now_iso(),
                 },
             )
+            queue_campaign_summary(campaign_id)
             return
 
         worker_pools = db.list_call_worker_pools(str(latest_campaign["doctor_id"]))
@@ -910,6 +917,7 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
                     "updated_at": _utc_now_iso(),
                 },
             )
+            queue_campaign_summary(campaign_id)
             return
 
         tasks = []
@@ -962,6 +970,7 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
                     "updated_at": _utc_now_iso(),
                 },
             )
+            queue_campaign_summary(campaign_id)
             return
 
 
@@ -1021,9 +1030,14 @@ def get_blood_campaign_snapshot(campaign_id: str) -> dict[str, Any] | None:
         if item.get("status") in {"completed", "accepted", "failed"}
     )
 
+    from app.services.blood_notification_service import list_campaign_messages
+
     return {
         "campaign": campaign,
         "attempts": attempts,
+        # SMS/email sent alongside the calls (donor confirmations, appeals,
+        # contact-person updates, the doctor's summary email).
+        "messages": list_campaign_messages(campaign_id),
         "summary": {
             "active": active_count,
             "completed": completed_count,

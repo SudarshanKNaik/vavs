@@ -98,6 +98,7 @@ migration_files=(
   028_blood_donor_orgs.sql
   029_outbreak_watch.sql
   030_outbreak_places.sql
+  031_blood_campaign_messages.sql
 )
 
 existing_markers="$(run_psql -tAc 'SELECT COUNT(*) FROM schema_migrations;' | tr -d '[:space:]')"

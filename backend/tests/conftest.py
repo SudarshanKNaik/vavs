@@ -28,6 +28,8 @@ os.environ["FOLLOW_UP_CRON_ENABLED"] = "false"
 # Never send real patient SMS/email from tests; notification tests opt in with fakes.
 os.environ["NOTIFY_PATIENTS_SMS"] = "false"
 os.environ["NOTIFY_PATIENTS_EMAIL"] = "false"
+os.environ["NOTIFY_BLOOD_SMS"] = "false"
+os.environ["NOTIFY_BLOOD_EMAIL"] = "false"
 sys.path.insert(0, str(BACKEND_ROOT))
 
 

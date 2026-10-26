@@ -1590,9 +1590,30 @@ export interface BloodCampaignSummary {
   accepted: boolean;
 }
 
+export type BloodMessageKind =
+  | "donor_accepted"
+  | "org_accepted"
+  | "donor_missed"
+  | "contact_update"
+  | "contact_summary"
+  | "doctor_summary";
+
+/** An SMS or email sent alongside the calls for a blood request. */
+export interface BloodCampaignMessage {
+  id: string;
+  attempt_id: string | null;
+  kind: BloodMessageKind;
+  channel: "sms" | "email";
+  recipient: string;
+  status: "pending" | "sent" | "failed" | "skipped";
+  detail?: string | null;
+  created_at: string;
+}
+
 export interface BloodCampaignDetail {
   campaign: Record<string, unknown>;
   attempts: BloodCampaignAttempt[];
+  messages?: BloodCampaignMessage[];
   summary: BloodCampaignSummary;
 }
 
