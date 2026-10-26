@@ -1567,6 +1567,10 @@ def cancel_appointment_for_patient_portal(
     if not appointment or appointment["patient_id"] != patient["id"]:
         raise RuntimeError("Appointment not found for this patient")
 
+    # Cancelling frees the slot, so a finished visit must not reopen it.
+    if appointment["status"] in {"completed", "in_progress", "no_show"}:
+        raise RuntimeError(f"A {appointment['status']} appointment can't be cancelled")
+
     cancel_note = "Cancelled by patient via portal"
     if reason:
         cancel_note = f"{cancel_note}: {reason.strip()}"
@@ -1589,7 +1593,7 @@ def cancel_doctor_slots(
     if not slot_ids:
         raise RuntimeError("No slots selected")
 
-    cancel_note = "Cancelled by doctor (day cancelled)"
+    cancel_note = "Cancelled by doctor"
     if reason and reason.strip():
         cancel_note = f"{cancel_note}: {reason.strip()}"
 
@@ -1674,6 +1678,39 @@ def cancel_doctor_slots(
             ),
         }
     )
+
+
+def reopen_doctor_slots(doctor_id: str, slot_ids: list[str]) -> dict[str, Any]:
+    """Make cancelled future slots bookable again (undo Remove / Cancel day).
+
+    Previously cancelled appointments stay cancelled; patients rebook if they
+    still want the time.
+    """
+    if not slot_ids:
+        raise RuntimeError("No slots selected")
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            UPDATE availability_slots
+            SET status = 'available',
+                reserved_by = NULL,
+                reserved_until = NULL,
+                updated_at = now()
+            WHERE doctor_id = %s
+              AND id = ANY(%s::uuid[])
+              AND status = 'cancelled'
+              AND slot_start > now()
+            RETURNING id
+            """,
+            (doctor_id, slot_ids),
+        )
+        reopened = list(cur.fetchall())
+
+    return {
+        "reopened_slots": len(reopened),
+        "skipped_slots": len(slot_ids) - len(reopened),
+    }
 
 
 def reschedule_appointment_for_patient_portal(

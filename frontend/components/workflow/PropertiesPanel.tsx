@@ -1,6 +1,7 @@
 'use client';
 
 import { type Node } from '@xyflow/react';
+import { MousePointerClick } from 'lucide-react';
 import { CATEGORY_STYLES, type WorkflowNodeData } from './types';
 
 const NODE_TYPE_CATEGORY: Record<string, keyof typeof CATEGORY_STYLES> = {
@@ -127,7 +128,7 @@ export function PropertiesPanel({
         </div>
         <div className="flex-1 flex flex-col items-center justify-center gap-2 p-6">
           <div className="w-8 h-8 rounded-lg border-2 border-dashed border-border flex items-center justify-center">
-            <span className="text-muted-foreground text-xs">↖</span>
+            <MousePointerClick className="size-4 text-muted-foreground" aria-hidden />
           </div>
           <p className="text-[11px] text-muted-foreground text-center leading-relaxed">
             Click a node to inspect and edit its properties
@@ -225,7 +226,7 @@ export function PropertiesPanel({
         <span
           className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide border ${styles.badge}`}
         >
-          <span>{styles.icon}</span>
+          <styles.icon className="size-3" aria-hidden />
           {styles.label}
         </span>
 

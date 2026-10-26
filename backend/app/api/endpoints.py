@@ -850,6 +850,10 @@ class AvailabilitySlotsCancelRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class AvailabilitySlotsReopenRequest(BaseModel):
+    slot_ids: list[str] = Field(min_length=1, max_length=200)
+
+
 class PatientPortalRegisterRequest(BaseModel):
     auth_user_id: str
     email: str
@@ -1170,9 +1174,19 @@ async def delete_doctor_slot(doctor_id: str, slot_id: str):
         ) from exc
 
 
+@router.post("/doctors/{doctor_id}/slots/reopen")
+async def reopen_doctor_slots(doctor_id: str, body: AvailabilitySlotsReopenRequest):
+    """Make cancelled future slots bookable again."""
+    doctor = _resolve_doctor_or_404(doctor_id)
+    try:
+        return await _run_db_call(db.reopen_doctor_slots, doctor["id"], body.slot_ids)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/doctors/{doctor_id}/slots/cancel")
 async def cancel_doctor_slots(doctor_id: str, body: AvailabilitySlotsCancelRequest):
-    """Cancel several slots at once (the doctor's "Cancel day" action).
+    """Cancel one slot or several at once ("Remove" on a slot, or "Cancel day").
 
     Booked appointments on those slots are cancelled and the patients notified.
     """

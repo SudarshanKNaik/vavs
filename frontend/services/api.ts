@@ -479,6 +479,22 @@ export async function cancelDoctorSlots(
   return response.json() as Promise<CancelDoctorSlotsResult>;
 }
 
+export async function reopenDoctorSlots(doctorId: string, slotIds: string[]) {
+  const response = await fetch(
+    `${API_URL}/api/doctors/${doctorId}/slots/reopen`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot_ids: slotIds }),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to reopen slots (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<{ reopened_slots: number; skipped_slots: number }>;
+}
+
 export async function reserveSlot(
   slotId: string,
   payload: { patient_id: string; hold_minutes?: number },

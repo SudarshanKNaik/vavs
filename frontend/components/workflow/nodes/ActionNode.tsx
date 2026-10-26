@@ -1,6 +1,7 @@
 'use client';
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Settings } from 'lucide-react';
 import { type WorkflowNodeData } from '../types';
 
 export default function ActionNode({ data, selected }: NodeProps) {
@@ -28,7 +29,7 @@ export default function ActionNode({ data, selected }: NodeProps) {
 
       {/* Header */}
       <div className="flex items-center gap-2 mb-2">
-        <span className="text-purple-600 text-base leading-none">⚙</span>
+        <Settings className="size-4 text-purple-600" aria-hidden />
         <span className="text-[10px] text-purple-600 uppercase tracking-widest font-bold">Action</span>
       </div>
 

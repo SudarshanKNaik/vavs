@@ -7,13 +7,14 @@ import {
   getDoctorAvailabilitySettings,
   listDoctorAppointments,
   listDoctorSlots,
+  reopenDoctorSlots,
   updateDoctorAvailabilitySettings,
   type DoctorAppointmentItem,
   type DoctorAvailabilitySettings,
   type DoctorManagedSlot,
 } from "@/services/api";
 import { Button } from "@/components/ui/button";
-import { CalendarClock, CalendarX, Loader2, RefreshCw } from "lucide-react";
+import { CalendarClock, CalendarX, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
 
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
@@ -42,6 +43,53 @@ function slotTone(status: string) {
   return "border-border bg-muted/40 text-muted-foreground";
 }
 
+function SlotAction({
+  slot,
+  displayStatus,
+  busy,
+  disabled,
+  nowMs,
+  onRemove,
+  onReopen,
+}: {
+  slot: DoctorManagedSlot;
+  displayStatus: string;
+  busy: boolean;
+  disabled: boolean;
+  nowMs: number;
+  onRemove: (slot: DoctorManagedSlot) => void;
+  onReopen: (slot: DoctorManagedSlot) => void;
+}) {
+  if (displayStatus === "completed") return null;
+  const isFuture = new Date(slot.slot_start).getTime() > nowMs;
+  if (!isFuture) return null;
+
+  const base =
+    "mt-1.5 inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+
+  if (displayStatus === "cancelled") {
+    return (
+      <button type="button" disabled={disabled} onClick={() => onReopen(slot)} className={`${base} hover:bg-background/70`}>
+        {busy ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+        Reopen
+      </button>
+    );
+  }
+
+  const hasPatient = displayStatus === "booked" || displayStatus === "reserved";
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onRemove(slot)}
+      className={`${base} text-destructive hover:bg-destructive/10`}
+    >
+      {busy ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+      {hasPatient ? "Cancel appointment" : "Remove"}
+    </button>
+  );
+}
+
 export default function AvailabilityPage() {
   const { user } = useLocalAuth();
   const doctorId = user?.doctor_id || user?.sub;
@@ -53,6 +101,10 @@ export default function AvailabilityPage() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [toggling, setToggling] = useState(false);
   const [cancellingDay, setCancellingDay] = useState<string | null>(null);
+  // Slot (or "day:<date>") with an action in flight, to disable its button.
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  // When slots were last loaded; decides which slots count as future.
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const [message, setMessage] = useState<string | null>(null);
 
@@ -73,6 +125,7 @@ export default function AvailabilityPage() {
       ]);
       setSettings(settingsData);
       setSlots(slotsData);
+      setNowMs(Date.now());
 
       const statusBySlot: Record<string, string> = {};
       for (const appt of (appointmentsData as DoctorAppointmentItem[])) {
@@ -183,6 +236,70 @@ export default function AvailabilityPage() {
       setCancellingDay(null);
     }
   }, [cancellableSlotsByDay, doctorId, fetchAvailabilityContext]);
+
+  // Future cancelled slots per day, for "Reopen day".
+  const reopenableSlotsByDay = useMemo(() => {
+    const byDay = new Map<string, DoctorManagedSlot[]>();
+    for (const slot of slots) {
+      const start = new Date(slot.slot_start);
+      if (Number.isNaN(start.getTime()) || slot.status !== "cancelled" || start.getTime() <= nowMs) continue;
+      const dateKey = start.toISOString().slice(0, 10);
+      if (!byDay.has(dateKey)) byDay.set(dateKey, []);
+      byDay.get(dateKey)?.push(slot);
+    }
+    return byDay;
+  }, [slots, nowMs]);
+
+  const handleRemoveSlot = useCallback(async (slot: DoctorManagedSlot) => {
+    if (!doctorId) return;
+    const when = formatDateTime(slot.slot_start);
+    const hasPatient = slot.status === "booked" || slot.status === "reserved";
+    let reason: string | null = "";
+    if (hasPatient) {
+      reason = window.prompt(
+        `Cancel the appointment at ${when}?\n\nThe patient will be notified and the slot closed.` +
+          "\n\nOptional reason to show the patient:",
+        "",
+      );
+      if (reason === null) return;
+    } else if (!window.confirm(`Remove the ${when} slot? Patients and the call agent won't be able to book it.`)) {
+      return;
+    }
+
+    setBusyKey(slot.id);
+    setMessage(null);
+    try {
+      const result = await cancelDoctorSlots(doctorId, {
+        slot_ids: [slot.id],
+        reason: reason?.trim() || undefined,
+      });
+      setMessage(
+        result.cancelled_appointments > 0
+          ? `Appointment at ${when} cancelled and the patient notified.`
+          : `Slot at ${when} removed.`,
+      );
+      await fetchAvailabilityContext();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not remove the slot.");
+    } finally {
+      setBusyKey(null);
+    }
+  }, [doctorId, fetchAvailabilityContext]);
+
+  const handleReopen = useCallback(async (slotIds: string[], label: string, key: string) => {
+    if (!doctorId || slotIds.length === 0) return;
+    setBusyKey(key);
+    setMessage(null);
+    try {
+      const result = await reopenDoctorSlots(doctorId, slotIds);
+      setMessage(`${label} reopened: ${result.reopened_slots} slot(s) bookable again.`);
+      await fetchAvailabilityContext();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not reopen.");
+    } finally {
+      setBusyKey(null);
+    }
+  }, [doctorId, fetchAvailabilityContext]);
 
   const handleToggleAvailability = useCallback(async (nextValue: boolean) => {
     if (!doctorId) return;
@@ -340,6 +457,23 @@ export default function AvailabilityPage() {
                               {isCancelling ? <Loader2 className="size-3 animate-spin" /> : <CalendarX className="size-3" />}
                               {isCancelling ? "Cancelling" : "Cancel day"}
                             </button>
+                          ) : (reopenableSlotsByDay.get(day)?.length || 0) > 0 ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleReopen(
+                                  (reopenableSlotsByDay.get(day) || []).map((s) => s.id),
+                                  formatDayLabel(day),
+                                  `day:${day}`,
+                                )
+                              }
+                              disabled={busyKey !== null || loading}
+                              title="Make this day's cancelled slots bookable again"
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {busyKey === `day:${day}` ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                              Reopen day
+                            </button>
                           ) : (
                             <span className="shrink-0 text-[10px] font-normal text-muted-foreground">Day closed</span>
                           )}
@@ -369,6 +503,15 @@ export default function AvailabilityPage() {
                               <p className="mt-1 text-[11px] leading-tight opacity-90">
                                 {formatDateTime(slot.slot_start)}
                               </p>
+                              <SlotAction
+                                slot={slot}
+                                displayStatus={displayStatus || slot.status}
+                                busy={busyKey === slot.id}
+                                disabled={busyKey !== null || cancellingDay !== null}
+                                nowMs={nowMs}
+                                onRemove={handleRemoveSlot}
+                                onReopen={(s) => handleReopen([s.id], formatDateTime(s.slot_start), s.id)}
+                              />
                             </div>
                           ) : (
                             <div className="rounded-md border border-dashed border-border px-2 py-4 text-center text-[11px] text-muted-foreground">

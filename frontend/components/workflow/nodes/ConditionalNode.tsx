@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { GitBranch } from 'lucide-react';
 import { type WorkflowNodeData } from '../types';
 import { useCmdHover } from '../CmdHoverContext';
 
@@ -69,7 +70,7 @@ export default function ConditionalNode({ data, selected }: NodeProps) {
 
       {/* Header */}
       <div className="relative flex items-center gap-2 mb-2">
-        <span className="text-amber-600 text-base leading-none font-bold">◇</span>
+        <GitBranch className="size-4 text-amber-600" aria-hidden />
         <span className="text-[10px] text-amber-600 uppercase tracking-widest font-bold">Condition</span>
       </div>
 
@@ -88,8 +89,8 @@ export default function ConditionalNode({ data, selected }: NodeProps) {
 
       {/* True / False labels above handles */}
       <div className="relative flex justify-between mt-3 px-1">
-        <span className="text-[10px] font-bold text-emerald-600">✓ True</span>
-        <span className="text-[10px] font-bold text-red-500">✗ False</span>
+        <span className="text-[10px] font-bold text-emerald-600">True</span>
+        <span className="text-[10px] font-bold text-red-500">False</span>
       </div>
 
       {/* Two source handles: True (left) and False (right) */}

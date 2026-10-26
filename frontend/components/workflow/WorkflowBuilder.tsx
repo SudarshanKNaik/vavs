@@ -68,6 +68,7 @@ import {
   Phone,
   Sparkles,
   LayoutTemplate,
+  Play,
 } from "lucide-react";
 import dagre from "dagre";
 import { CmdHoverContext } from "./CmdHoverContext";
@@ -1451,9 +1452,9 @@ function FlowContent() {
             {saveStatus === "saving"
               ? "Saving…"
               : saveStatus === "saved"
-                ? "✓ Saved"
+                ? "Saved"
                 : saveStatus === "error"
-                  ? "✕ Error"
+                  ? "Error"
                   : savedWorkflowId
                     ? "Update Workflow"
                     : "Save Workflow"}
@@ -1467,7 +1468,8 @@ function FlowContent() {
             }
             className="bg-emerald-600 hover:bg-emerald-500 text-white"
           >
-            ▶&nbsp;Run
+            <Play className="size-3.5" aria-hidden />
+            Run
           </Button>
         </div>
       </header>
@@ -2137,7 +2139,8 @@ function FlowContent() {
                     onClick={handleRun}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white"
                   >
-                    ▶ Execute
+                    <Play className="size-3.5" aria-hidden />
+                    Execute
                   </Button>
                 </div>
               </>
@@ -2183,7 +2186,7 @@ function FlowContent() {
                     }`}
                   >
                     <span className="text-sm font-semibold">
-                      {runStatus === "success" ? "✓ Completed" : "✕ Failed"}
+                      {runStatus === "success" ? "Completed" : "Failed"}
                     </span>
                     {runResult.call_log_id && (
                       <span className="text-[10px] text-muted-foreground ml-auto">
@@ -2284,8 +2287,8 @@ function FlowContent() {
                               </span>
                               <span>
                                 {callStatus.patient_confirmed
-                                  ? "✓ Yes"
-                                  : "✗ No"}
+                                  ? "Yes"
+                                  : "No"}
                               </span>
                             </div>
                           )}
@@ -2303,7 +2306,7 @@ function FlowContent() {
                           {callStatus.appointment_id && (
                             <div className="flex gap-2 mt-1">
                               <span className="text-success font-medium">
-                                ✓ Appointment booked!
+                                Appointment booked
                               </span>
                               <code className="text-[10px] text-muted-foreground">
                                 {callStatus.appointment_id.slice(0, 8)}…
