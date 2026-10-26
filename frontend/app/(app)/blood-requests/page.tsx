@@ -4,10 +4,13 @@ import { useLocalAuth } from "@/lib/local-auth";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createBloodRequest,
+  getBloodCampaignStatus,
   listBloodRequests,
   listPatients,
+  type BloodCampaignAttempt,
   type BloodComponent,
   type BloodRequestItem,
+  type BloodSource,
   type BloodUrgency,
 } from "@/services/api";
 import { Button } from "@/components/ui/button";
@@ -28,9 +31,27 @@ const URGENCIES: { value: BloodUrgency; label: string; hint: string }[] = [
   { value: "planned", label: "Planned", hint: "Scheduled surgery or transfusion" },
 ];
 
+const SOURCES: { value: BloodSource; label: string; hint: string }[] = [
+  { value: "donors", label: "Donors", hint: "Individual donors, nearest first" },
+  { value: "orgs", label: "Organizations", hint: "Blood banks and hospitals that store blood" },
+  { value: "any", label: "Any", hint: "Whoever is nearest, donor or organization" },
+];
+
+const RADIUS_KM = 20;
+
+const ATTEMPT_LABELS: Record<string, { label: string; tone: string }> = {
+  queued: { label: "Queued", tone: "text-muted-foreground" },
+  active: { label: "Calling…", tone: "text-warning" },
+  accepted: { label: "Accepted", tone: "text-success" },
+  declined: { label: "No stock", tone: "text-destructive" },
+  completed: { label: "Declined", tone: "text-destructive" },
+  hangup: { label: "Hung up", tone: "text-warning" },
+  failed: { label: "Failed", tone: "text-destructive" },
+};
+
 // Hospital and contact details rarely change between requests, so remember
 // them per doctor in this browser to save retyping. Best-effort only.
-const DEFAULTS_KEY = "caresync_blood_request_defaults";
+const DEFAULTS_KEY = "caresync_blood_request_defaults_v2";
 
 type SavedDefaults = {
   hospital_name?: string;
@@ -64,13 +85,14 @@ const emptyForm = {
   component: "whole_blood" as BloodComponent,
   units_needed: 1,
   urgency: "urgent" as BloodUrgency,
+  source: "orgs" as BloodSource,
   required_by: "",
   recipient_name: "",
   patient_id: "",
   reason: "",
-  hospital_name: "",
+  hospital_name: "KIMS Hubli",
   ward: "",
-  hospital_location: "",
+  hospital_location: "KIMS Hospital, Vidyanagar, Hubli, Karnataka",
   contact_name: "",
   contact_phone: "",
 };
@@ -87,15 +109,18 @@ function formatDateTime(value?: string | null) {
 }
 
 function requestStatus(req: BloodRequestItem): { label: string; tone: string; live: boolean } {
-  const confirmed = `${req.donors_accepted} of ${req.units_needed} donor(s) confirmed`;
+  const orgOnly = req.source === "orgs";
+  const confirmed = orgOnly
+    ? `${req.donors_accepted ? "stock confirmed" : "no stock confirmed yet"}`
+    : `${req.donors_accepted} of ${req.units_needed} donor(s) confirmed`;
   if (req.status === "draft" || req.status === "running") {
     return {
-      label: `Calling donors · ${confirmed}${req.calls_in_progress ? ` · ${req.calls_in_progress} call(s) live` : ""}`,
+      label: `Calling ${orgOnly ? "organizations" : req.source === "any" ? "donors and organizations" : "donors"} · ${confirmed}${req.calls_in_progress ? ` · ${req.calls_in_progress} call(s) live` : ""}`,
       tone: "border-warning/40 bg-warning/10 text-warning",
       live: true,
     };
   }
-  if (req.status === "stopped" || req.donors_accepted >= req.units_needed) {
+  if (req.status === "stopped" || (!orgOnly && req.donors_accepted >= req.units_needed)) {
     return { label: `Fulfilled · ${confirmed}`, tone: "border-success/40 bg-success/10 text-success", live: false };
   }
   if (req.status === "failed") {
@@ -107,13 +132,13 @@ function requestStatus(req: BloodRequestItem): { label: string; tone: string; li
   }
   if (req.donors_contacted === 0) {
     return {
-      label: "No eligible donors found (blood group, cooldown or empty donor list)",
+      label: `No one eligible within ${req.radius_km ?? RADIUS_KM} km (blood group, cooldown, radius or empty list)`,
       tone: "border-destructive/40 bg-destructive/10 text-destructive",
       live: false,
     };
   }
   return {
-    label: `All eligible donors called · ${confirmed}`,
+    label: `Everyone within ${req.radius_km ?? RADIUS_KM} km called · ${confirmed}`,
     tone: "border-destructive/40 bg-destructive/10 text-destructive",
     live: false,
   };
@@ -144,6 +169,49 @@ function Field({
       {children}
       {hint && <span className="block text-[11px] text-muted-foreground">{hint}</span>}
     </label>
+  );
+}
+
+function RequestCalls({ requestId, live }: { requestId: string; live: boolean }) {
+  const [attempts, setAttempts] = useState<BloodCampaignAttempt[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      getBloodCampaignStatus(requestId)
+        .then((detail) => !cancelled && setAttempts(detail.attempts))
+        .catch(() => undefined);
+    load();
+    if (!live) return () => { cancelled = true; };
+    const timer = window.setInterval(load, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [requestId, live]);
+
+  if (attempts.length === 0) return null;
+  return (
+    <ul className="mt-3 divide-y divide-border rounded-md border border-border text-xs">
+      {attempts.map((a) => {
+        const state = ATTEMPT_LABELS[a.status] || { label: a.status, tone: "text-muted-foreground" };
+        return (
+          <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
+            <span>
+              {a.donor_name || "Unknown"}
+              <span className="ml-2 text-[10px] uppercase text-muted-foreground">
+                {a.target_type === "org" ? "organization" : "donor"}
+                {a.attempt_number && a.attempt_number > 1 ? ` · retry` : ""}
+              </span>
+            </span>
+            <span className={state.tone}>
+              {state.label}
+              {a.units_confirmed ? ` · ${a.units_confirmed} unit(s)` : ""}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -227,6 +295,8 @@ export default function BloodRequestsPage() {
         component: form.component,
         units_needed: Number(form.units_needed) || 1,
         urgency: form.urgency,
+        source: form.source,
+        radius_km: RADIUS_KM,
         required_by: form.required_by ? new Date(form.required_by).toISOString() : null,
         recipient_name: form.recipient_name.trim(),
         patient_id: form.patient_id || null,
@@ -246,7 +316,12 @@ export default function BloodRequestsPage() {
       });
       setMessage({
         type: "success",
-        text: `Request sent. Calling compatible ${form.blood_type} donors nearest first until ${form.units_needed} confirm.`,
+        text:
+          form.source === "orgs"
+            ? `Request sent. Calling blood-storing organizations within ${RADIUS_KM} km, nearest first, until one confirms.`
+            : form.source === "any"
+              ? `Request sent. Calling the nearest donors and organizations within ${RADIUS_KM} km until one confirms.`
+              : `Request sent. Calling compatible ${form.blood_type} donors nearest first until ${form.units_needed} confirm.`,
       });
       // Keep hospital/contact details; clear the patient-specific fields.
       setForm((prev) => ({
@@ -255,6 +330,7 @@ export default function BloodRequestsPage() {
         component: "whole_blood",
         units_needed: 1,
         urgency: "urgent",
+        source: "orgs",
         required_by: "",
         recipient_name: "",
         patient_id: "",
@@ -273,7 +349,7 @@ export default function BloodRequestsPage() {
       <div>
         <h1 className="text-2xl font-semibold">Blood Requests</h1>
         <p className="text-sm text-muted-foreground">
-          Tell us what the patient needs. CareSync calls compatible donors, nearest first, until enough confirm.
+          Tell us what the patient needs. CareSync calls donors or blood-storing organizations within {RADIUS_KM} km, nearest first, until enough confirm.
         </p>
       </div>
 
@@ -382,6 +458,32 @@ export default function BloodRequestsPage() {
             </div>
           </div>
 
+          <div className="mt-4">
+            <span className="text-xs font-medium">Get blood from <span className="text-destructive">*</span></span>
+            <div className="mt-1 grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Blood source">
+              {SOURCES.map((src) => {
+                const selected = form.source === src.value;
+                return (
+                  <button
+                    key={src.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => update("source", src.value)}
+                    className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                      selected
+                        ? "border-primary bg-primary/10 text-foreground"
+                        : "border-border bg-background text-muted-foreground hover:border-primary/40"
+                    }`}
+                  >
+                    <span className="block font-medium">{src.label}</span>
+                    <span className="block text-[11px] opacity-80">{src.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           <Field
             label="Required by"
             required={form.urgency === "planned"}
@@ -399,10 +501,13 @@ export default function BloodRequestsPage() {
         </section>
 
         <section className="rounded-xl border border-border bg-card p-4">
-          <h2 className="mb-1 text-sm font-semibold">3. Where and who to contact</h2>
-          <p className="mb-3 text-xs text-muted-foreground">Remembered for your next request.</p>
+          <h2 className="mb-1 text-sm font-semibold">3. Requesting body details</h2>
+          <p className="mb-3 text-xs text-muted-foreground">
+            The hospital or body making this request. Its address sets the {RADIUS_KM} km search area. Remembered for
+            your next request.
+          </p>
           <div className="grid gap-4 md:grid-cols-2">
-            <Field label="Hospital" required>
+            <Field label="Requesting hospital / body" required>
               <input
                 required
                 value={form.hospital_name}
@@ -420,7 +525,7 @@ export default function BloodRequestsPage() {
               />
             </Field>
             <Field
-              label="Hospital address or map coordinates"
+              label="Address or map coordinates"
               required
               hint='Used to call the nearest donors first. An address, or "lat,lng" like 15.3647,75.1240.'
               className="md:col-span-2"
@@ -433,7 +538,7 @@ export default function BloodRequestsPage() {
                 className={inputClass}
               />
             </Field>
-            <Field label="Contact person" required hint="Who the donor should reach on arrival.">
+            <Field label="Contact person" required hint="Who donors and organizations should reach.">
               <input
                 required
                 value={form.contact_name}
@@ -471,7 +576,7 @@ export default function BloodRequestsPage() {
         <div className="flex justify-end">
           <Button type="submit" disabled={submitting || !doctorId}>
             {submitting ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Droplet className="mr-2 size-4" />}
-            {submitting ? "Sending..." : "Send request and start calling donors"}
+            {submitting ? "Sending..." : "Send request and start calling"}
           </Button>
         </div>
       </form>
@@ -523,6 +628,7 @@ export default function BloodRequestsPage() {
                       {status.label}
                     </span>
                   </div>
+                  <RequestCalls requestId={req.id} live={status.live} />
                 </li>
               );
             })}

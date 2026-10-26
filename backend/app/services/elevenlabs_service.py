@@ -253,7 +253,9 @@ async def get_conversation(conversation_id: str) -> dict[str, Any]:
     return data
 
 
-async def list_recent_conversations(page_size: int = 10) -> list[dict[str, Any]]:
+async def list_recent_conversations(
+    page_size: int = 10, agent_id: str | None = None
+) -> list[dict[str, Any]]:
     """
     Fetch the most recent conversations for the configured agent.
     Used to find the conversation_id for a call that didn't return one immediately.
@@ -261,13 +263,14 @@ async def list_recent_conversations(page_size: int = 10) -> list[dict[str, Any]]
     url = f"{ELEVENLABS_BASE}/convai/conversations"
     headers = {"xi-api-key": settings.elevenlabs_api_key}
     params: dict[str, Any] = {"page_size": page_size}
-    if settings.elevenlabs_agent_id:
-        params["agent_id"] = settings.elevenlabs_agent_id
+    agent_id = agent_id or settings.elevenlabs_agent_id
+    if agent_id:
+        params["agent_id"] = agent_id
 
     logger.info(
         "[11L][list_conversations][request] page_size=%s agent_id=%s",
         page_size,
-        settings.elevenlabs_agent_id,
+        agent_id,
     )
 
     async with httpx.AsyncClient(timeout=15) as client:
@@ -296,7 +299,36 @@ async def list_recent_conversations(page_size: int = 10) -> list[dict[str, Any]]
     return conversations
 
 
-async def get_conversation_by_call_sid(call_sid: str) -> str | None:
+async def get_twilio_call_status(call_sid: str) -> str | None:
+    """Twilio's status for a call (queued, ringing, in-progress, completed,
+    busy, no-answer, canceled, failed), or None if it can't be fetched.
+
+    ElevenLabs leaves a conversation at "initiated" forever when the callee
+    rejects or never answers, so Twilio is the only source that says so.
+    """
+    if not (settings.twilio_account_sid and settings.twilio_auth_token and call_sid):
+        return None
+    url = (
+        f"https://api.twilio.com/2010-04-01/Accounts/"
+        f"{settings.twilio_account_sid}/Calls/{call_sid}.json"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                url, auth=(settings.twilio_account_sid, settings.twilio_auth_token)
+            )
+        if resp.status_code >= 400:
+            logger.warning("Twilio call status error %s for %s", resp.status_code, call_sid)
+            return None
+        return str(resp.json().get("status") or "").lower() or None
+    except Exception as exc:
+        logger.warning("Twilio call status lookup failed for %s: %s", call_sid, exc)
+        return None
+
+
+async def get_conversation_by_call_sid(
+    call_sid: str, agent_id: str | None = None
+) -> str | None:
     """
     Look up the ElevenLabs conversation_id by Twilio callSid.
 
@@ -309,7 +341,7 @@ async def get_conversation_by_call_sid(call_sid: str) -> str | None:
             "[11L][resolve_by_call_sid][start] call_sid=%s",
             call_sid,
         )
-        convos = await list_recent_conversations(page_size=20)
+        convos = await list_recent_conversations(page_size=20, agent_id=agent_id)
         logger.info(
             "[11L][resolve_by_call_sid][scan] call_sid=%s candidates=%s",
             call_sid,

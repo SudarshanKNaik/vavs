@@ -20,7 +20,7 @@ from starlette.concurrency import run_in_threadpool
 import app.services.postgres_service as db
 from app.core.config import settings
 from app.services.blood_campaign_service import (
-    URGENCY_BATCH_SIZES,
+    default_batch_size,
     get_blood_campaign_map_points,
     get_blood_campaign_snapshot,
     ingest_blood_excel,
@@ -713,11 +713,17 @@ class BloodRequestCreate(BaseModel):
     recipient_name: str = Field(min_length=1, max_length=200)
     patient_id: str | None = None
     reason: str | None = Field(default=None, max_length=1000)
+    # The requesting body: who is asking, where they are (used for the search
+    # radius) and who to contact.
     hospital_name: str = Field(min_length=1, max_length=200)
     ward: str | None = Field(default=None, max_length=200)
     hospital_location: str = Field(min_length=1, max_length=500)
     contact_name: str = Field(min_length=1, max_length=200)
     contact_phone: str = Field(min_length=6, max_length=20)
+    # Where to look for blood: individual donors, blood-storing organizations,
+    # or either (nearest first). Calling stops at radius_km from the hospital.
+    source: str = Field(default="donors", pattern="^(donors|orgs|any)$")
+    radius_km: float = Field(default=20, gt=0, le=100)
 
 
 # ---------------------------------------------------------------------------
@@ -3933,7 +3939,13 @@ async def list_blood_campaign_donors(doctor_id: str):
 @router.get("/blood-campaigns/ngos")
 async def list_blood_campaign_ngos(doctor_id: str):
     await _resolve_doctor_or_404_async(doctor_id)
-    return await _run_db_call(db.list_blood_ngos, doctor_id)
+    return await _run_db_call(db.list_blood_orgs, doctor_id)
+
+
+@router.get("/blood-campaigns/orgs")
+async def list_blood_campaign_orgs(doctor_id: str):
+    await _resolve_doctor_or_404_async(doctor_id)
+    return await _run_db_call(db.list_blood_orgs, doctor_id)
 
 
 @router.post("/blood-campaigns/start", status_code=201)
@@ -3986,18 +3998,20 @@ async def create_blood_request(body: BloodRequestCreate):
             blood_type=body.blood_type,
             recipient_name=body.recipient_name,
             reason=body.reason,
-            patient_location=body.hospital_location,
-            batch_size=URGENCY_BATCH_SIZES.get(body.urgency, 3),
+            patient_location=(body.hospital_location or "").strip() or None,
+            batch_size=default_batch_size(body.urgency),
             request_details={
                 "component": body.component,
                 "units_needed": body.units_needed,
                 "urgency": body.urgency,
                 "required_by": body.required_by.isoformat() if body.required_by else None,
-                "hospital_name": body.hospital_name.strip(),
+                "hospital_name": (body.hospital_name or "").strip() or None,
                 "ward": (body.ward or "").strip() or None,
-                "contact_name": body.contact_name.strip(),
-                "contact_phone": body.contact_phone.strip(),
+                "contact_name": (body.contact_name or "").strip() or None,
+                "contact_phone": (body.contact_phone or "").strip() or None,
                 "patient_id": body.patient_id or None,
+                "source": body.source,
+                "radius_km": body.radius_km,
             },
         )
     except ValueError as exc:

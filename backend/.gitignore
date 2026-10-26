@@ -30,3 +30,6 @@ token.json
 
 # Local bootstrap marker
 .deps_installed
+
+# Real phone numbers for local seeding
+*.local.csv

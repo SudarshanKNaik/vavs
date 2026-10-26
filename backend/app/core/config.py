@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     elevenlabs_phone_number_id: str = ""
     elevenlabs_webhook_secret: str = ""  # wsec_... from ElevenLabs dashboard
     elevenlabs_blood_agent_id: str = ""  # optional; blood campaigns fall back to elevenlabs_agent_id
+    # Blood requests: donors/organizations called at once (0 = by urgency).
+    blood_batch_size: int = 3
     # Shared secret ElevenLabs sends (X-Tool-Secret header) when the agent calls
     # our live slot tools mid-call. The tool endpoints refuse requests without it.
     elevenlabs_tool_secret: str = ""
