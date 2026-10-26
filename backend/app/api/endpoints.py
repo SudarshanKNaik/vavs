@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 import app.services.postgres_service as db
 from app.core.config import settings
 from app.services.blood_campaign_service import (
+    URGENCY_BATCH_SIZES,
     get_blood_campaign_map_points,
     get_blood_campaign_snapshot,
     ingest_blood_excel,
@@ -674,6 +675,27 @@ class BloodCampaignStartRequest(BaseModel):
     reason: str | None = None
     patient_location: str | None = None
     batch_size: int = Field(default=3, ge=1, le=10)
+
+
+class BloodRequestCreate(BaseModel):
+    """What a doctor fills in on the Blood Request form."""
+
+    doctor_id: str
+    blood_type: str = Field(pattern=r"^(A|B|AB|O)[+-]$")
+    component: str = Field(
+        default="whole_blood", pattern="^(whole_blood|packed_rbc|platelets|plasma)$"
+    )
+    units_needed: int = Field(default=1, ge=1, le=20)
+    urgency: str = Field(default="urgent", pattern="^(emergency|urgent|planned)$")
+    required_by: datetime | None = None
+    recipient_name: str = Field(min_length=1, max_length=200)
+    patient_id: str | None = None
+    reason: str | None = Field(default=None, max_length=1000)
+    hospital_name: str = Field(min_length=1, max_length=200)
+    ward: str | None = Field(default=None, max_length=200)
+    hospital_location: str = Field(min_length=1, max_length=500)
+    contact_name: str = Field(min_length=1, max_length=200)
+    contact_phone: str = Field(min_length=6, max_length=20)
 
 
 # ---------------------------------------------------------------------------
@@ -3581,6 +3603,60 @@ async def start_blood_campaign_endpoint(body: BloodCampaignStartRequest):
         "campaign_id": campaign.get("id"),
         "status": campaign.get("status"),
     }
+
+
+@router.post("/blood-requests", status_code=201)
+async def create_blood_request(body: BloodRequestCreate):
+    """Doctor raises a blood request; donor calling starts immediately.
+
+    The request is stored as a blood campaign so it reuses the donor-calling
+    engine. Calling continues until ``units_needed`` donors have accepted.
+    """
+    doctor = await _resolve_doctor_or_404_async(body.doctor_id)
+
+    if body.required_by and body.required_by < datetime.now(timezone.utc) - timedelta(minutes=5):
+        raise HTTPException(status_code=400, detail="'Required by' is in the past")
+
+    if body.patient_id:
+        patient = await _run_db_call(db.get_patient, body.patient_id)
+        if not patient or str(patient.get("doctor_id")) != str(doctor["id"]):
+            raise HTTPException(status_code=404, detail="Patient not found for this doctor")
+
+    try:
+        campaign = await start_blood_campaign(
+            doctor_id=str(doctor["id"]),
+            blood_type=body.blood_type,
+            recipient_name=body.recipient_name,
+            reason=body.reason,
+            patient_location=body.hospital_location,
+            batch_size=URGENCY_BATCH_SIZES.get(body.urgency, 3),
+            request_details={
+                "component": body.component,
+                "units_needed": body.units_needed,
+                "urgency": body.urgency,
+                "required_by": body.required_by.isoformat() if body.required_by else None,
+                "hospital_name": body.hospital_name.strip(),
+                "ward": (body.ward or "").strip() or None,
+                "contact_name": body.contact_name.strip(),
+                "contact_phone": body.contact_phone.strip(),
+                "patient_id": body.patient_id or None,
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to create blood request doctor_id=%s", body.doctor_id)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create blood request: {exc}"
+        ) from exc
+
+    return {"request_id": str(campaign.get("id")), "status": campaign.get("status")}
+
+
+@router.get("/blood-requests")
+async def list_blood_requests(doctor_id: str):
+    doctor = await _resolve_doctor_or_404_async(doctor_id)
+    return await _run_db_call(db.list_blood_requests, str(doctor["id"]))
 
 
 @router.get("/blood-campaigns/{campaign_id}/map")

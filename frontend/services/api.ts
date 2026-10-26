@@ -1640,6 +1640,74 @@ export async function getBloodCampaignStatus(campaignId: string) {
   return response.json() as Promise<BloodCampaignDetail>;
 }
 
+// Blood requests (the doctor's form; stored as blood campaigns)
+
+export type BloodComponent = "whole_blood" | "packed_rbc" | "platelets" | "plasma";
+export type BloodUrgency = "emergency" | "urgent" | "planned";
+
+export interface BloodRequestInput {
+  doctor_id: string;
+  blood_type: string;
+  component: BloodComponent;
+  units_needed: number;
+  urgency: BloodUrgency;
+  required_by?: string | null;
+  recipient_name: string;
+  patient_id?: string | null;
+  reason?: string | null;
+  hospital_name: string;
+  ward?: string | null;
+  hospital_location: string;
+  contact_name: string;
+  contact_phone: string;
+}
+
+export interface BloodRequestItem {
+  id: string;
+  blood_type: string;
+  component: BloodComponent;
+  units_needed: number;
+  urgency: BloodUrgency;
+  required_by?: string | null;
+  recipient_name: string;
+  reason?: string | null;
+  hospital_name?: string | null;
+  ward?: string | null;
+  patient_location?: string | null;
+  contact_name?: string | null;
+  contact_phone?: string | null;
+  status: string;
+  created_at: string;
+  completed_at?: string | null;
+  donors_contacted: number;
+  donors_accepted: number;
+  calls_in_progress: number;
+}
+
+export async function createBloodRequest(payload: BloodRequestInput) {
+  const response = await fetch(`${API_URL}/api/blood-requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to create blood request (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<{ request_id: string; status: string }>;
+}
+
+export async function listBloodRequests(doctorId: string) {
+  const response = await fetch(
+    `${API_URL}/api/blood-requests?doctor_id=${encodeURIComponent(doctorId)}`,
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to fetch blood requests (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<BloodRequestItem[]>;
+}
+
 export async function getBloodCampaignMap(campaignId: string) {
   const response = await fetch(
     `${API_URL}/api/blood-campaigns/${campaignId}/map`,

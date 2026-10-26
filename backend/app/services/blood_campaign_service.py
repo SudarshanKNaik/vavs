@@ -23,6 +23,21 @@ from app.services.elevenlabs_service import (
 logger = logging.getLogger(__name__)
 
 _VALID_BLOOD_TYPES = {"A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"}
+
+# Spoken labels for Blood Request form values, used in the donor call.
+COMPONENT_LABELS = {
+    "whole_blood": "whole blood",
+    "packed_rbc": "red blood cell",
+    "platelets": "platelet",
+    "plasma": "plasma",
+}
+URGENCY_LABELS = {
+    "emergency": "Emergency",
+    "urgent": "Urgent",
+    "planned": "Planned",
+}
+# How many donors to call at once for each urgency: wider nets for emergencies.
+URGENCY_BATCH_SIZES = {"emergency": 6, "urgent": 4, "planned": 2}
 _NOMINATIM_SEARCH_URL = "https://nominatim.openstreetmap.org/search"
 _LAT_LON_PATTERN = re.compile(
     r"^\s*([+-]?\d{1,2}(?:\.\d+)?)\s*[,\s]\s*([+-]?\d{1,3}(?:\.\d+)?)\s*$"
@@ -587,9 +602,16 @@ async def _process_donor_attempt(
             },
         )
 
-        call_reason = (
-            f"Urgent blood requirement for {campaign.get('recipient_name', 'a patient')}"
+        component_label = COMPONENT_LABELS.get(
+            campaign.get("component") or "whole_blood", "blood"
         )
+        urgency_label = URGENCY_LABELS.get(campaign.get("urgency") or "urgent", "Urgent")
+        call_reason = (
+            f"{urgency_label} {component_label} requirement for "
+            f"{campaign.get('recipient_name', 'a patient')}"
+        )
+        if campaign.get("hospital_name"):
+            call_reason = f"{call_reason} at {campaign['hospital_name']}"
         if campaign.get("reason"):
             call_reason = f"{call_reason}. Reason: {campaign['reason']}"
 
@@ -599,9 +621,9 @@ async def _process_donor_attempt(
             doctor_name="CareSync Blood Support",
             doctor_specialty="Emergency Blood Coordination",
             lab_result_summary=(
-                f"Required blood type: {campaign['blood_type']}"
+                f"Required blood type: {campaign['blood_type']} ({component_label})"
             ),
-            facility_name="Nearest NGO Blood Support Network",
+            facility_name=campaign.get("hospital_name") or "Nearest NGO Blood Support Network",
             facility_address=campaign.get("patient_location") or "",
             facility_phone_number="",
             call_reason=call_reason,
@@ -716,6 +738,8 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
     )
 
     batch_size = max(1, int(campaign.get("batch_size") or 3))
+    units_needed = max(1, int(campaign.get("units_needed") or 1))
+    accepted_donor_ids: list[str] = []
 
     while True:
         latest_campaign = db.get_blood_campaign(campaign_id)
@@ -785,15 +809,18 @@ async def run_blood_campaign_dispatch(campaign_id: str) -> None:
             )
 
         batch_results = await asyncio.gather(*tasks, return_exceptions=False)
-        accepted = [result for result in batch_results if result.get("accepted")]
+        accepted_donor_ids.extend(
+            result["donor_id"] for result in batch_results if result.get("accepted")
+        )
 
-        if accepted:
-            accepted_donor_id = accepted[0]["donor_id"]
+        # Keep calling new batches until enough donors have said yes for the
+        # number of units the doctor asked for.
+        if len(accepted_donor_ids) >= units_needed:
             db.update_blood_campaign(
                 campaign_id,
                 {
                     "status": "stopped",
-                    "accepted_donor_id": accepted_donor_id,
+                    "accepted_donor_id": accepted_donor_ids[0],
                     "completed_at": _utc_now_iso(),
                     "updated_at": _utc_now_iso(),
                 },
@@ -809,8 +836,21 @@ async def start_blood_campaign(
     reason: str | None,
     patient_location: str | None,
     batch_size: int,
+    request_details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Create a campaign and start calling donors in the background.
+
+    ``request_details`` carries the Blood Request form fields (component,
+    units_needed, urgency, required_by, hospital_name, ward, contact_name,
+    contact_phone, patient_id).
+    """
     patient_latitude, patient_longitude = _parse_location_coordinates(patient_location or "")
+    if patient_latitude is None and (patient_location or "").strip():
+        # Address text instead of "lat,lng": geocode it so donors can be ranked
+        # by distance. The geocoder is blocking, so keep it off the event loop.
+        patient_latitude, patient_longitude = await asyncio.to_thread(
+            _geocode_plain_location, patient_location or ""
+        )
 
     campaign = db.create_blood_campaign(
         {
@@ -823,6 +863,7 @@ async def start_blood_campaign(
             "patient_longitude": patient_longitude,
             "batch_size": max(1, int(batch_size or 3)),
             "status": "draft",
+            **(request_details or {}),
         }
     )
 

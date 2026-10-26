@@ -2859,12 +2859,56 @@ def list_campaign_attempts(campaign_id: str) -> list[dict[str, Any]]:
         return list(cur.fetchall())
 
 
+# Donor groups that can give red cells to each recipient group. Used for whole
+# blood, packed RBC and (as the usual ABO-compatible preference) platelets.
+_RED_CELL_COMPATIBLE_DONORS: dict[str, list[str]] = {
+    "O-": ["O-"],
+    "O+": ["O+", "O-"],
+    "A-": ["A-", "O-"],
+    "A+": ["A+", "A-", "O+", "O-"],
+    "B-": ["B-", "O-"],
+    "B+": ["B+", "B-", "O+", "O-"],
+    "AB-": ["AB-", "A-", "B-", "O-"],
+    "AB+": ["AB+", "AB-", "A+", "A-", "B+", "B-", "O+", "O-"],
+}
+
+# Plasma is the reverse of red cells: AB is the universal plasma donor and the
+# Rh factor doesn't matter, so only the ABO group is compared.
+_PLASMA_COMPATIBLE_ABO: dict[str, list[str]] = {
+    "O": ["O", "A", "B", "AB"],
+    "A": ["A", "AB"],
+    "B": ["B", "AB"],
+    "AB": ["AB"],
+}
+
+
+def compatible_donor_blood_types(recipient_blood_type: str, component: str) -> list[str]:
+    recipient = (recipient_blood_type or "").strip().upper()
+    if component == "plasma":
+        abo = recipient.rstrip("+-")
+        return [
+            f"{group}{rh}"
+            for group in _PLASMA_COMPATIBLE_ABO.get(abo, [])
+            for rh in ("+", "-")
+        ]
+    return list(_RED_CELL_COMPATIBLE_DONORS.get(recipient, []))
+
+
 def list_campaign_eligible_donors(
     campaign_id: str,
     *,
     limit: int = 100,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
+    campaign = get_blood_campaign(campaign_id)
+    if not campaign:
+        return []
+    allowed_types = compatible_donor_blood_types(
+        campaign.get("blood_type") or "", campaign.get("component") or "whole_blood"
+    )
+    if not allowed_types:
+        return []
+
     with _cursor() as cur:
         cur.execute(
             """
@@ -2874,19 +2918,7 @@ def list_campaign_eligible_donors(
             LEFT JOIN blood_campaign_donor_attempts a
                 ON a.campaign_id = c.id AND a.donor_id = d.id
             WHERE d.doctor_id = c.doctor_id
-              AND UPPER(d.blood_type) = ANY(
-                    CASE UPPER(c.blood_type)
-                        WHEN 'O-' THEN ARRAY['O-']::text[]
-                        WHEN 'O+' THEN ARRAY['O+', 'O-']::text[]
-                        WHEN 'A-' THEN ARRAY['A-', 'O-']::text[]
-                        WHEN 'A+' THEN ARRAY['A+', 'A-', 'O+', 'O-']::text[]
-                        WHEN 'B-' THEN ARRAY['B-', 'O-']::text[]
-                        WHEN 'B+' THEN ARRAY['B+', 'B-', 'O+', 'O-']::text[]
-                        WHEN 'AB-' THEN ARRAY['AB-', 'A-', 'B-', 'O-']::text[]
-                        WHEN 'AB+' THEN ARRAY['AB+', 'AB-', 'A+', 'A-', 'B+', 'B-', 'O+', 'O-']::text[]
-                        ELSE ARRAY[]::text[]
-                    END
-                )
+              AND UPPER(d.blood_type) = ANY(%s::text[])
               AND a.id IS NULL
               AND (
                     CASE
@@ -2895,9 +2927,42 @@ def list_campaign_eligible_donors(
                         ELSE d.last_donated_date + INTERVAL '120 days'
                     END
                   ) <= CURRENT_DATE
-            ORDER BY d.created_at ASC
+            -- Nearest donors first when both locations are known (a flat-earth
+            -- approximation is plenty for ranking within a city); others last.
+            ORDER BY
+                CASE
+                    WHEN d.latitude IS NULL OR d.longitude IS NULL
+                      OR c.patient_latitude IS NULL OR c.patient_longitude IS NULL
+                    THEN NULL
+                    ELSE power(d.latitude - c.patient_latitude, 2)
+                       + power((d.longitude - c.patient_longitude)
+                               * cos(radians(c.patient_latitude)), 2)
+                END ASC NULLS LAST,
+                d.created_at ASC
             LIMIT %s OFFSET %s
             """,
-            (campaign_id, limit, offset),
+            (campaign_id, allowed_types, limit, offset),
         )
         return list(cur.fetchall())
+
+
+def list_blood_requests(doctor_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """A doctor's blood requests, newest first, with donor-call progress counts."""
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                c.*,
+                COUNT(a.id) AS donors_contacted,
+                COUNT(a.id) FILTER (WHERE a.status = 'accepted') AS donors_accepted,
+                COUNT(a.id) FILTER (WHERE a.status IN ('queued', 'active')) AS calls_in_progress
+            FROM blood_campaigns c
+            LEFT JOIN blood_campaign_donor_attempts a ON a.campaign_id = c.id
+            WHERE c.doctor_id = %s
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+            LIMIT %s
+            """,
+            (doctor_id, limit),
+        )
+        return _json_safe(list(cur.fetchall()))
