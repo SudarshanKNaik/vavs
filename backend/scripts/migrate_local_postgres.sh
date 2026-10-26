@@ -87,6 +87,7 @@ migration_files=(
   017_create_follow_up_cron_tables.sql
   018_remove_off_schedule_seed_slots.sql
   019_add_blood_request_fields.sql
+  020_appointment_change_tracking.sql
 )
 
 existing_markers="$(run_psql -tAc 'SELECT COUNT(*) FROM schema_migrations;' | tr -d '[:space:]')"

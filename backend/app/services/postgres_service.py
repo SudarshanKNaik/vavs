@@ -1528,8 +1528,18 @@ def update_appointment(appointment_id: str, payload: dict[str, Any]) -> dict[str
 
 
 def cancel_appointment(
-    appointment_id: str, cancel_note: str | None = None
+    appointment_id: str,
+    cancel_note: str | None = None,
+    *,
+    cancelled_by: str = "system",
+    rescheduled_to_appointment_id: str | None = None,
 ) -> dict[str, Any]:
+    """Cancel an appointment and free its slot.
+
+    ``cancelled_by`` ('patient' | 'doctor' | 'system') and the reschedule link
+    let the doctor's dashboard show who changed what. When the doctor cancels,
+    the patient gets a notification.
+    """
     appointment = get_appointment(appointment_id)
     if not appointment:
         raise RuntimeError("Appointment not found")
@@ -1541,13 +1551,36 @@ def cancel_appointment(
     if cancel_note:
         merged_note = f"{merged_note}\n{cancel_note}".strip()
 
-    updated = update_appointment(
-        appointment_id,
-        {
-            "status": "cancelled",
-            "notes": merged_note if merged_note else appointment.get("notes"),
-        },
-    )
+    changes: dict[str, Any] = {
+        "status": "cancelled",
+        "notes": merged_note if merged_note else appointment.get("notes"),
+    }
+    if _table_has_column("appointments", "cancelled_by"):
+        changes["cancelled_by"] = cancelled_by
+        changes["cancelled_at"] = _utc_now_iso()
+        if rescheduled_to_appointment_id:
+            changes["rescheduled_to_appointment_id"] = rescheduled_to_appointment_id
+    updated = update_appointment(appointment_id, changes)
+
+    if cancelled_by == "doctor":
+        slot = get_availability_slot(str(appointment["slot_id"])) or {}
+        start = _parse_iso_datetime(slot.get("slot_start"))
+        when = (
+            start.astimezone(CLINIC_TZ).strftime("%A %d %B %Y at %I:%M %p")
+            if start
+            else "your scheduled time"
+        )
+        create_notification(
+            {
+                "patient_id": appointment["patient_id"],
+                "recipient": "patient",
+                "message": (
+                    f"Your appointment on {when} was cancelled by the doctor. "
+                    "Please book a new slot from the patient portal."
+                ),
+                "priority": "high",
+            }
+        )
 
     _update_rows(
         "availability_slots",
