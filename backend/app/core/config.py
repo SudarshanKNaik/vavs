@@ -75,5 +75,11 @@ class Settings(BaseSettings):
     follow_up_cron_max_attempts: int = 3
     follow_up_cron_batch_size: int = 10
 
+    # NGO portal
+    ngo_session_ttl_hours: int = 12
+    ngo_csv_max_bytes: int = 2 * 1024 * 1024
+    ngo_csv_max_rows: int = 2000
+    ngo_import_preview_ttl_hours: int = 24
+
 
 settings = Settings()

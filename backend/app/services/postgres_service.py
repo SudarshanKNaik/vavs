@@ -460,7 +460,8 @@ def _find_next_rebooking_slot(
     return None
 
 
-def _insert_row(table: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _insert_row(table: str, payload: dict[str, Any], *, cur=None) -> dict[str, Any]:
+    """Insert one row. Pass ``cur`` to run inside a caller-managed transaction."""
     if not payload:
         raise RuntimeError(f"Cannot insert empty payload into {table}")
 
@@ -473,9 +474,13 @@ def _insert_row(table: str, payload: dict[str, Any]) -> dict[str, Any]:
         sql.SQL(", ").join(sql.Placeholder() for _ in columns),
     )
 
-    with _cursor() as cur:
+    if cur is not None:
         cur.execute(query, values)
         row = cur.fetchone()
+    else:
+        with _cursor() as own_cur:
+            own_cur.execute(query, values)
+            row = own_cur.fetchone()
 
     if not row:
         raise RuntimeError(f"Insert failed for table {table}")
@@ -2264,8 +2269,8 @@ def delete_workflow(workflow_id: str) -> None:
     _delete_rows("workflows", {"id": workflow_id})
 
 
-def create_patient(payload: dict[str, Any]) -> dict[str, Any]:
-    return _insert_row("patients", payload)
+def create_patient(payload: dict[str, Any], *, cur=None) -> dict[str, Any]:
+    return _insert_row("patients", payload, cur=cur)
 
 
 def get_patient(patient_id: str) -> dict[str, Any] | None:

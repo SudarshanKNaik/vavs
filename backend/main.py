@@ -12,6 +12,7 @@ logging.basicConfig(
 )
 
 from app.api.endpoints import router, start_follow_up_scheduler
+from app.api.ngo_endpoints import router as ngo_router
 from app.services import postgres_service as db
 
 app = FastAPI(
@@ -42,6 +43,7 @@ app.add_middleware(
 # Routes
 # ---------------------------------------------------------------------------
 app.include_router(router, prefix="/api")
+app.include_router(ngo_router, prefix="/api")
 
 
 @app.on_event("startup")

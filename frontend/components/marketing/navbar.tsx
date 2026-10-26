@@ -79,6 +79,12 @@ export function Navbar() {
           >
             Doctor Portal
           </Link>
+          <Link
+            href="/ngo-signIn"
+            className="inline-flex items-center gap-2 border border-[#2C2420] px-5 py-2 text-[12px] tracking-[0.08em] uppercase text-[#2C2420] transition-all duration-300 hover:bg-[#2C2420] hover:text-[#FAF8F5]"
+          >
+            NGO Portal
+          </Link>
         </div>
 
         {/* Mobile toggle */}
@@ -130,6 +136,13 @@ export function Navbar() {
                 onClick={() => setMobileOpen(false)}
               >
                 Sign In
+              </Link>
+              <Link
+                href="/ngo-signIn"
+                className="inline-flex w-fit items-center border border-[#2C2420] px-6 py-2.5 text-[12px] tracking-[0.08em] uppercase text-[#2C2420]"
+                onClick={() => setMobileOpen(false)}
+              >
+                NGO Portal
               </Link>
             </div>
           </div>

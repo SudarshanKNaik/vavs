@@ -90,6 +90,9 @@ migration_files=(
   020_appointment_change_tracking.sql
   021_google_calendar_oauth.sql
   022_doctor_schedule_settings.sql
+  023_create_ngo_portal_tables.sql
+  024_create_ngo_email_otps.sql
+  025_add_ngo_darpan_id.sql
 )
 
 existing_markers="$(run_psql -tAc 'SELECT COUNT(*) FROM schema_migrations;' | tr -d '[:space:]')"
@@ -98,6 +101,8 @@ has_final_table="$(run_psql -tAc "SELECT to_regclass('public.doctor_feedback') I
 if [[ "${existing_markers}" == "0" && "${has_final_table}" == "t" ]]; then
   echo "Existing schema detected; backfilling migration markers"
   for file in "${migration_files[@]}"; do
+    # 020+ are idempotent and must actually run on legacy schemas.
+    [[ "${file}" > "020" ]] && continue
     run_psql -v ON_ERROR_STOP=1 -c "INSERT INTO schema_migrations(file_name) VALUES ('${file}') ON CONFLICT DO NOTHING;"
   done
 fi
