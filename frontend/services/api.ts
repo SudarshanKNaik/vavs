@@ -93,6 +93,10 @@ export interface DoctorAppointmentItem {
   call_origin?: Record<string, unknown> | null;
   report_title?: string | null;
   report_date?: string | null;
+  cancelled_by?: "patient" | "doctor" | "system" | null;
+  cancelled_at?: string | null;
+  rescheduled_to_appointment_id?: string | null;
+  rescheduled_to_slot_start?: string | null;
 }
 
 export interface DoctorPortalPatientItem {
@@ -1224,6 +1228,29 @@ export async function listDoctorUpcomingAppointments(
     );
   }
   return response.json() as Promise<DoctorAppointmentItem[]>;
+}
+
+export interface AppointmentActivityItem {
+  kind: "booked" | "cancelled" | "rescheduled";
+  appointment_id: string;
+  happened_at: string;
+  actor?: "patient" | "doctor" | "system" | null;
+  patient_name: string;
+  slot_start?: string | null;
+  new_slot_start?: string | null;
+}
+
+export async function listDoctorAppointmentActivity(doctorId: string, days = 14) {
+  const response = await fetch(
+    `${API_URL}/api/doctors/${doctorId}/appointment-activity?days=${days}`,
+  );
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(
+      `Failed to fetch appointment activity (${response.status}): ${detail}`,
+    );
+  }
+  return response.json() as Promise<AppointmentActivityItem[]>;
 }
 
 export async function listPatientUpcomingAppointments(

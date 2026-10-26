@@ -15,6 +15,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { AppointmentsOverview } from "@/components/app/appointments-overview";
 import {
   Phone,
   CheckCircle2,
@@ -248,6 +249,9 @@ export default function DashboardPage() {
           </div>
         ))}
       </div>
+
+      {/* Appointments: reflects patient bookings, cancels and reschedules live */}
+      <AppointmentsOverview doctorId={doctorId} />
 
       {/* Patient selector + EHR detail */}
       <div className="rounded-xl border border-border bg-card">
