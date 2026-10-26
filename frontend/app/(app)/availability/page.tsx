@@ -14,6 +14,7 @@ import {
   type DoctorManagedSlot,
 } from "@/services/api";
 import { Button } from "@/components/ui/button";
+import { ScheduleRulesCard } from "@/components/app/schedule-rules-card";
 import { CalendarClock, CalendarX, ChevronLeft, ChevronRight, Loader2, RefreshCw, RotateCcw, X } from "lucide-react";
 
 function formatDateTime(value?: string | null) {
@@ -374,7 +375,7 @@ export default function AvailabilityPage() {
       <div>
         <h1 className="text-2xl font-semibold">Manage Availability</h1>
         <p className="text-sm text-muted-foreground">
-          Toggle your day planning. Slots are kept open automatically for the next 30 days.
+          Set your working hours and slot length. Open slots are kept up to date automatically.
         </p>
       </div>
 
@@ -404,9 +405,7 @@ export default function AvailabilityPage() {
             Pending today: {settings?.pending_today_appointments || 0}
           </span>
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Rule set: 10:30 AM to 4:30 PM, 30-minute slots, 1:30 PM to 2:30 PM break, Sundays closed, rolling 30-day window.
-        </p>
+        <ScheduleRulesCard doctorId={doctorId} onSaved={fetchAvailabilityContext} />
       </div>
 
       {message && (

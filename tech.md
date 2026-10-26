@@ -236,8 +236,9 @@ under "Must fix first (security)".
 
 | Rule | Where |
 |---|---|
-| Clinic hours 10:30 AM to 4:30 PM, 30-minute slots, 1:30 to 2:30 PM break, Sundays closed | `postgres_service.py` constants |
-| Rolling 30-day slot window, generated on demand in one batch insert | `_ensure_doctor_rolling_slots` (`ROLLING_WINDOW_DAYS`) |
+| Schedule rules per doctor, editable on Manage Availability: working days, hours, optional break, slot length (10–120 min), booking window (1–90 days). Default: Mon–Sat, 10:30 AM–4:30 PM, 30-min slots, 1:30–2:30 PM break, 30 days | `doctor_schedule_settings` table (migration 022), `DoctorSchedule` / `DEFAULT_SCHEDULE` in `postgres_service.py` |
+| Saving a schedule rebuilds unbooked future slots; booked appointments are never changed (the doctor is told how many fall outside the new hours) | `save_doctor_schedule` |
+| Rolling slot window, generated on demand in one batch insert, never overlapping existing slots | `_ensure_doctor_rolling_slots` |
 | Who cancelled / rescheduled an appointment, and where it moved | `appointments.cancelled_by`, `cancelled_at`, `rescheduled_to_appointment_id` (migration 020) |
 | Slot hold → booking (atomic, prevents double booking) | `reserve_availability_slot`, `book_reserved_slot` SQL functions |
 | Blood compatibility: red-cell rules for whole blood, PRBC and platelets; reversed ABO rules for plasma | `compatible_donor_blood_types` |

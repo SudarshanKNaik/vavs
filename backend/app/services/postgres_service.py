@@ -8,6 +8,8 @@ This module replaces Supabase client calls with direct PostgreSQL access.
 
 import logging
 import secrets
+import time as _time_module
+from dataclasses import dataclass
 from functools import lru_cache
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta, timezone
@@ -114,15 +116,6 @@ def _table_has_column(table_name: str, column_name: str) -> bool:
         return cur.fetchone() is not None
 
 
-SLOT_START_TIME = time(10, 30)
-SLOT_END_TIME = time(16, 30)
-LUNCH_BREAK_START = time(13, 30)
-LUNCH_BREAK_END = time(14, 30)
-SLOT_DURATION_MINUTES = 30
-# Doctors' slots are kept open a full month ahead (was 3 days).
-ROLLING_WINDOW_DAYS = 30
-
-
 def _clinic_timezone():
     try:
         return ZoneInfo(settings.clinic_timezone)
@@ -133,73 +126,144 @@ def _clinic_timezone():
 CLINIC_TZ = _clinic_timezone()
 
 
-def _is_sunday(day: date) -> bool:
-    return day.weekday() == 6
+# ---------------------------------------------------------------------------
+# Per-doctor schedule rules (editable on the Manage Availability page)
+# ---------------------------------------------------------------------------
 
 
-def _next_working_day(day: date) -> date:
-    candidate = day + timedelta(days=1)
-    while _is_sunday(candidate):
-        candidate += timedelta(days=1)
-    return candidate
+@dataclass(frozen=True)
+class DoctorSchedule:
+    day_start: time
+    day_end: time
+    break_start: time | None
+    break_end: time | None
+    slot_minutes: int
+    # Python weekdays: 0 = Monday ... 6 = Sunday.
+    working_days: frozenset[int]
+    window_days: int
 
+    def is_working_day(self, day: date) -> bool:
+        return day.weekday() in self.working_days
 
-def _iter_schedule_slots_for_day(day: date) -> list[tuple[datetime, datetime]]:
-    if _is_sunday(day):
-        return []
+    def in_break(self, local_time: time) -> bool:
+        return bool(
+            self.break_start and self.break_end and self.break_start <= local_time < self.break_end
+        )
 
-    slots: list[tuple[datetime, datetime]] = []
-    current = datetime.combine(day, SLOT_START_TIME, tzinfo=CLINIC_TZ)
-    day_end = datetime.combine(day, SLOT_END_TIME, tzinfo=CLINIC_TZ)
+    def is_inside_hours(self, dt: datetime) -> bool:
+        local = dt.astimezone(CLINIC_TZ)
+        if not self.is_working_day(local.date()):
+            return False
+        if local.time() < self.day_start or local.time() >= self.day_end:
+            return False
+        return not self.in_break(local.time())
 
-    while current < day_end:
-        slot_end = current + timedelta(minutes=SLOT_DURATION_MINUTES)
-        in_break = LUNCH_BREAK_START <= current.time() < LUNCH_BREAK_END
-        if not in_break and slot_end <= day_end:
+    def slots_for_day(self, day: date) -> list[tuple[datetime, datetime]]:
+        """(start, end) in UTC for every slot on a clinic-local day."""
+        if not self.is_working_day(day):
+            return []
+        slots: list[tuple[datetime, datetime]] = []
+        step = timedelta(minutes=self.slot_minutes)
+        current = datetime.combine(day, self.day_start, tzinfo=CLINIC_TZ)
+        day_end = datetime.combine(day, self.day_end, tzinfo=CLINIC_TZ)
+        break_start = datetime.combine(day, self.break_start, tzinfo=CLINIC_TZ) if self.break_start else None
+        break_end = datetime.combine(day, self.break_end, tzinfo=CLINIC_TZ) if self.break_end else None
+        while current + step <= day_end:
+            slot_end = current + step
+            overlaps_break = break_start and break_end and current < break_end and break_start < slot_end
+            if overlaps_break:
+                current = max(current + step, break_end)  # resume right after the break
+                continue
             slots.append((current.astimezone(timezone.utc), slot_end.astimezone(timezone.utc)))
-        current += timedelta(minutes=SLOT_DURATION_MINUTES)
+            current = slot_end
+        return slots
 
-    return slots
+    def next_working_day(self, day: date) -> date:
+        candidate = day + timedelta(days=1)
+        for _ in range(7):
+            if self.is_working_day(candidate):
+                return candidate
+            candidate += timedelta(days=1)
+        return candidate
+
+    def to_dict(self) -> dict[str, Any]:
+        fmt = lambda t: t.strftime("%H:%M") if t else None  # noqa: E731
+        return {
+            "day_start": fmt(self.day_start),
+            "day_end": fmt(self.day_end),
+            "break_start": fmt(self.break_start),
+            "break_end": fmt(self.break_end),
+            "slot_minutes": self.slot_minutes,
+            "working_days": sorted(d + 1 for d in self.working_days),  # ISO 1..7
+            "window_days": self.window_days,
+        }
 
 
-def _is_inside_working_hours(dt: datetime) -> bool:
-    local_time = dt.astimezone(CLINIC_TZ).time()
-    if local_time < SLOT_START_TIME or local_time >= SLOT_END_TIME:
-        return False
-    return not (LUNCH_BREAK_START <= local_time < LUNCH_BREAK_END)
+# Used until a doctor saves their own rules (the old fixed clinic schedule).
+DEFAULT_SCHEDULE = DoctorSchedule(
+    day_start=time(10, 30),
+    day_end=time(16, 30),
+    break_start=time(13, 30),
+    break_end=time(14, 30),
+    slot_minutes=30,
+    working_days=frozenset(range(6)),  # Monday to Saturday
+    window_days=30,
+)
+
+_SCHEDULE_CACHE_SECONDS = 30
+_schedule_cache: dict[str, tuple[float, DoctorSchedule]] = {}
+
+
+def get_doctor_schedule(doctor_id: str) -> DoctorSchedule:
+    key = str(doctor_id)
+    cached = _schedule_cache.get(key)
+    if cached and _time_module.monotonic() - cached[0] < _SCHEDULE_CACHE_SECONDS:
+        return cached[1]
+
+    schedule = DEFAULT_SCHEDULE
+    if _table_exists("doctor_schedule_settings"):
+        with _cursor() as cur:
+            cur.execute("SELECT * FROM doctor_schedule_settings WHERE doctor_id = %s", (key,))
+            row = cur.fetchone()
+        if row:
+            schedule = DoctorSchedule(
+                day_start=row["day_start"],
+                day_end=row["day_end"],
+                break_start=row["break_start"],
+                break_end=row["break_end"],
+                slot_minutes=int(row["slot_minutes"]),
+                working_days=frozenset(int(d) - 1 for d in row["working_days"]),
+                window_days=int(row["window_days"]),
+            )
+    _schedule_cache[key] = (_time_module.monotonic(), schedule)
+    return schedule
+
+
+def _table_exists(table_name: str) -> bool:
+    with _cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL AS ok", (f"public.{table_name}",))
+        return bool(cur.fetchone()["ok"])
 
 
 def _ensure_doctor_rolling_slots(doctor_id: str, from_day: date | None = None) -> None:
+    schedule = get_doctor_schedule(doctor_id)
     base_day = from_day or datetime.now(CLINIC_TZ).date()
     target_days = [
-        base_day + timedelta(days=offset) for offset in range(ROLLING_WINDOW_DAYS)
+        base_day + timedelta(days=offset) for offset in range(schedule.window_days)
     ]
-    target_days = [d for d in target_days if not _is_sunday(d)]
 
-    if not target_days:
+    # One statement for the whole window: with a month of slots (~260 per
+    # doctor) a query per slot made every slot lookup slow.
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for day in target_days:
+        for slot_start, slot_end in schedule.slots_for_day(day):
+            starts.append(slot_start)
+            ends.append(slot_end)
+    if not starts:
         return
 
     with _cursor() as cur:
-        cur.execute(
-            """
-            DELETE FROM availability_slots
-            WHERE doctor_id = %s
-              AND status != 'booked'
-              AND slot_start::date = ANY(%s::date[])
-              AND EXTRACT(DOW FROM slot_start) = 0
-            """,
-            (doctor_id, target_days),
-        )
-
-        # One statement for the whole window: with a month of slots (~260 per
-        # doctor) a query per slot made every slot lookup slow.
-        starts: list[datetime] = []
-        ends: list[datetime] = []
-        for day in target_days:
-            for slot_start, slot_end in _iter_schedule_slots_for_day(day):
-                starts.append(slot_start)
-                ends.append(slot_end)
-
         cur.execute(
             """
             INSERT INTO availability_slots (
@@ -212,50 +276,186 @@ def _ensure_doctor_rolling_slots(doctor_id: str, from_day: date | None = None) -
             )
             SELECT %s, s.slot_start, s.slot_end, 'available', now(), now()
             FROM unnest(%s::timestamptz[], %s::timestamptz[]) AS s(slot_start, slot_end)
+            -- Never overlap an existing slot: after the doctor changes slot
+            -- length or hours, booked/removed slots from the old rules stay put.
+            WHERE NOT EXISTS (
+                SELECT 1 FROM availability_slots o
+                WHERE o.doctor_id = %s
+                  AND o.slot_start < s.slot_end
+                  AND o.slot_end > s.slot_start
+            )
             ON CONFLICT (doctor_id, slot_start, slot_end) DO NOTHING
             """,
-            (doctor_id, starts, ends),
+            (doctor_id, starts, ends, doctor_id),
         )
+
+
+def save_doctor_schedule(doctor_id: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Save a doctor's schedule rules and rebuild their upcoming slots.
+
+    Unbooked future slots that don't fit the new rules are removed and new
+    ones are generated. Booked appointments are never touched; the result
+    reports how many now fall outside the new hours so the doctor can decide.
+    """
+    def _t(value: Any) -> time | None:
+        if value in (None, ""):
+            return None
+        return value if isinstance(value, time) else time.fromisoformat(str(value))
+
+    new = DoctorSchedule(
+        day_start=_t(values["day_start"]),
+        day_end=_t(values["day_end"]),
+        break_start=_t(values.get("break_start")),
+        break_end=_t(values.get("break_end")),
+        slot_minutes=int(values["slot_minutes"]),
+        working_days=frozenset(int(d) - 1 for d in values["working_days"]),
+        window_days=int(values["window_days"]),
+    )
+    if not (new.day_start and new.day_end) or new.day_start >= new.day_end:
+        raise RuntimeError("The day must end after it starts")
+    if (new.break_start is None) != (new.break_end is None):
+        raise RuntimeError("Set both break start and break end, or neither")
+    if new.break_start and not (new.day_start <= new.break_start < new.break_end <= new.day_end):
+        raise RuntimeError("The break must be inside working hours")
+    if not 10 <= new.slot_minutes <= 120:
+        raise RuntimeError("Slot length must be between 10 and 120 minutes")
+    if not new.working_days or not new.working_days <= set(range(7)):
+        raise RuntimeError("Choose at least one working day")
+    if not 1 <= new.window_days <= 90:
+        raise RuntimeError("Booking window must be between 1 and 90 days")
+    if not any(new.slots_for_day(d) for d in (date(2026, 1, 5) + timedelta(days=i) for i in range(7))):
+        raise RuntimeError("These hours leave no room for a single slot")
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO doctor_schedule_settings (
+                doctor_id, day_start, day_end, break_start, break_end,
+                slot_minutes, working_days, window_days, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s::smallint[], %s, now())
+            ON CONFLICT (doctor_id) DO UPDATE SET
+                day_start = EXCLUDED.day_start,
+                day_end = EXCLUDED.day_end,
+                break_start = EXCLUDED.break_start,
+                break_end = EXCLUDED.break_end,
+                slot_minutes = EXCLUDED.slot_minutes,
+                working_days = EXCLUDED.working_days,
+                window_days = EXCLUDED.window_days,
+                updated_at = now()
+            """,
+            (
+                doctor_id, new.day_start, new.day_end, new.break_start, new.break_end,
+                new.slot_minutes, sorted(d + 1 for d in new.working_days), new.window_days,
+            ),
+        )
+    _schedule_cache.pop(str(doctor_id), None)
+
+    # Which future slots the new rules produce.
+    today = datetime.now(CLINIC_TZ).date()
+    wanted = {
+        pair
+        for offset in range(new.window_days)
+        for pair in new.slots_for_day(today + timedelta(days=offset))
+    }
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            SELECT s.id, s.slot_start, s.slot_end, s.status,
+                   EXISTS (SELECT 1 FROM appointments a WHERE a.slot_id = s.id) AS has_appointment,
+                   EXISTS (
+                       SELECT 1 FROM appointments a
+                       WHERE a.slot_id = s.id AND a.status IN ('booked', 'confirmed')
+                   ) AS has_active_appointment
+            FROM availability_slots s
+            WHERE s.doctor_id = %s AND s.slot_start > now()
+            """,
+            (doctor_id,),
+        )
+        future = list(cur.fetchall())
+
+    to_remove = [
+        row["id"]
+        for row in future
+        if (row["slot_start"], row["slot_end"]) not in wanted
+        and not row["has_appointment"]
+        # Live holds (a patient on a call right now) are left alone; they expire.
+        and row["status"] in {"available", "cancelled"}
+    ]
+    booked_outside = [
+        row for row in future
+        if row["has_active_appointment"] and not new.is_inside_hours(row["slot_start"])
+    ]
+
+    removed = 0
+    if to_remove:
+        with _cursor() as cur:
+            cur.execute(
+                "DELETE FROM availability_slots WHERE id = ANY(%s::uuid[]) RETURNING id",
+                (to_remove,),
+            )
+            removed = len(cur.fetchall())
+
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT count(*) AS n FROM availability_slots WHERE doctor_id = %s AND slot_start > now()",
+            (doctor_id,),
+        )
+        before = int(cur.fetchone()["n"])
+    _ensure_doctor_rolling_slots(doctor_id)
+    with _cursor() as cur:
+        cur.execute(
+            "SELECT count(*) AS n FROM availability_slots WHERE doctor_id = %s AND slot_start > now()",
+            (doctor_id,),
+        )
+        after = int(cur.fetchone()["n"])
+
+    return {
+        "schedule": new.to_dict(),
+        "slots_removed": removed,
+        "slots_added": after - before,
+        "booked_outside_new_hours": len(booked_outside),
+    }
 
 
 def _find_next_rebooking_slot(
     doctor_id: str, preferred_start: datetime, after_day: date
 ) -> dict[str, Any] | None:
-    with _cursor() as cur:
-        search_day = after_day
-        for _ in range(14):
-            if _is_sunday(search_day):
-                search_day += timedelta(days=1)
-                continue
+    schedule = get_doctor_schedule(doctor_id)
+    preferred_local_time = (
+        preferred_start.astimezone(CLINIC_TZ).time()
+        if schedule.is_inside_hours(preferred_start)
+        else schedule.day_start
+    )
+    search_day = after_day
+    for _ in range(14):
+        if not schedule.is_working_day(search_day):
+            search_day += timedelta(days=1)
+            continue
 
-            _ensure_doctor_rolling_slots(doctor_id, search_day)
+        _ensure_doctor_rolling_slots(doctor_id, search_day)
+        preferred_dt = datetime.combine(search_day, preferred_local_time, tzinfo=CLINIC_TZ)
+        day_start = datetime.combine(search_day, time(0, 0), tzinfo=CLINIC_TZ)
 
-            preferred_time = (
-                preferred_start.time()
-                if _is_inside_working_hours(preferred_start)
-                else SLOT_START_TIME
-            )
-            preferred_dt = datetime.combine(
-                search_day, preferred_time, tzinfo=timezone.utc
-            )
-
+        with _cursor() as cur:
             cur.execute(
                 """
                 SELECT id, doctor_id, slot_start, slot_end, status
                 FROM availability_slots
                 WHERE doctor_id = %s
-                  AND slot_start::date = %s
+                  AND slot_start >= %s AND slot_start < %s
                   AND status = 'available'
                 ORDER BY ABS(EXTRACT(EPOCH FROM (slot_start - %s))), slot_start
                 LIMIT 1
                 """,
-                (doctor_id, search_day, preferred_dt),
+                (doctor_id, day_start, day_start + timedelta(days=1), preferred_dt),
             )
             row = cur.fetchone()
-            if row:
-                return row
+        if row:
+            return row
 
-            search_day += timedelta(days=1)
+        search_day += timedelta(days=1)
 
     return None
 
@@ -742,7 +942,7 @@ def set_doctor_availability(
 
     moved_count = 0
     if not is_available and today_appointments:
-        next_working_day = _next_working_day(today_utc)
+        next_working_day = get_doctor_schedule(resolved_doctor_id).next_working_day(today_utc)
         for appointment in today_appointments:
             target_slot = _find_next_rebooking_slot(
                 resolved_doctor_id,
@@ -1058,8 +1258,8 @@ def create_doctor_slot(
     start_dt = _parse_iso_datetime(slot_start)
     if not start_dt:
         raise RuntimeError("Invalid slot_start datetime")
-    if _is_sunday(start_dt.date()):
-        raise RuntimeError("Slots cannot be created on Sundays")
+    if not get_doctor_schedule(doctor_id).is_working_day(start_dt.astimezone(CLINIC_TZ).date()):
+        raise RuntimeError("That day is not one of the doctor's working days")
 
     return _insert_row(
         "availability_slots",
@@ -2649,12 +2849,11 @@ def _bookable_slots(
         )
         rows = list(cur.fetchall())
 
+    schedule = get_doctor_schedule(doctor_id)
     bookable = []
     for row in rows:
         start = _parse_iso_datetime(row.get("slot_start"))
-        if not start:
-            continue
-        if _is_sunday(start.astimezone(CLINIC_TZ).date()) or not _is_inside_working_hours(start):
+        if not start or not schedule.is_inside_hours(start):
             continue
         bookable.append(row)
     return _drop_google_busy(doctor_id, bookable)[:limit]
@@ -2712,7 +2911,7 @@ def hold_slot_for_call(
     with _cursor() as cur:
         cur.execute(
             """
-            SELECT id FROM availability_slots
+            SELECT id, slot_end FROM availability_slots
             WHERE doctor_id = %s AND slot_start >= %s AND slot_start < %s
             LIMIT 1
             """,
@@ -2721,11 +2920,12 @@ def hold_slot_for_call(
         slot = cur.fetchone()
 
     on_schedule = bool(
-        slot and start_utc > datetime.now(timezone.utc) and _is_inside_working_hours(start_utc)
+        slot
+        and start_utc > datetime.now(timezone.utc)
+        and get_doctor_schedule(doctor_id).is_inside_hours(start_utc)
     )
     if on_schedule and not _drop_google_busy(
-        doctor_id,
-        [{"slot_start": start_utc, "slot_end": start_utc + timedelta(minutes=SLOT_DURATION_MINUTES)}],
+        doctor_id, [{"slot_start": start_utc, "slot_end": slot["slot_end"]}]
     ):
         on_schedule = False  # the doctor has something else in their calendar then
     held = None

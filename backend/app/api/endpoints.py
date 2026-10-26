@@ -873,6 +873,18 @@ class AvailabilitySlotsReopenRequest(BaseModel):
     slot_ids: list[str] = Field(min_length=1, max_length=200)
 
 
+class DoctorScheduleRequest(BaseModel):
+    """The doctor's editable schedule rules. Times are clinic-local HH:MM."""
+
+    day_start: str = Field(pattern=r"^\d{2}:\d{2}$")
+    day_end: str = Field(pattern=r"^\d{2}:\d{2}$")
+    break_start: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    break_end: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    slot_minutes: int = Field(ge=10, le=120)
+    working_days: list[int] = Field(min_length=1, max_length=7)  # ISO: 1 = Monday ... 7 = Sunday
+    window_days: int = Field(ge=1, le=90)
+
+
 class PatientPortalRegisterRequest(BaseModel):
     auth_user_id: str
     email: str
@@ -1191,6 +1203,30 @@ async def delete_doctor_slot(doctor_id: str, slot_id: str):
         raise HTTPException(
             status_code=400, detail=f"Delete slot failed: {exc}"
         ) from exc
+
+
+@router.get("/doctors/{doctor_id}/schedule")
+async def get_doctor_schedule(doctor_id: str):
+    doctor = _resolve_doctor_or_404(doctor_id)
+    schedule = await _run_db_call(db.get_doctor_schedule, str(doctor["id"]))
+    return {
+        **schedule.to_dict(),
+        "is_default": schedule == db.DEFAULT_SCHEDULE,
+        "timezone": settings.clinic_timezone,
+    }
+
+
+@router.put("/doctors/{doctor_id}/schedule")
+async def update_doctor_schedule(doctor_id: str, body: DoctorScheduleRequest):
+    """Save the doctor's hours, break, slot length, working days and booking
+    window, then rebuild their upcoming slots (booked appointments are kept)."""
+    doctor = _resolve_doctor_or_404(doctor_id)
+    if any(d < 1 or d > 7 for d in body.working_days):
+        raise HTTPException(status_code=422, detail="working_days must be 1 (Monday) to 7 (Sunday)")
+    try:
+        return await _run_db_call(db.save_doctor_schedule, str(doctor["id"]), body.model_dump())
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/doctors/{doctor_id}/slots/reopen")

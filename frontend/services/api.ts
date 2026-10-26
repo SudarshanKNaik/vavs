@@ -1806,3 +1806,50 @@ export async function disconnectGoogleCalendar(doctorId: string) {
     throw new Error(`Failed to disconnect Google Calendar (${response.status}): ${detail}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Doctor schedule rules (hours, break, slot length, working days, window)
+// ---------------------------------------------------------------------------
+
+export interface DoctorSchedule {
+  day_start: string; // "HH:MM", clinic time
+  day_end: string;
+  break_start: string | null;
+  break_end: string | null;
+  slot_minutes: number;
+  working_days: number[]; // ISO: 1 = Monday ... 7 = Sunday
+  window_days: number;
+}
+
+export async function getDoctorSchedule(doctorId: string) {
+  const response = await fetch(`${API_URL}/api/doctors/${doctorId}/schedule`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to load schedule (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<DoctorSchedule & { is_default: boolean; timezone: string }>;
+}
+
+export async function saveDoctorSchedule(doctorId: string, schedule: DoctorSchedule) {
+  const response = await fetch(`${API_URL}/api/doctors/${doctorId}/schedule`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(schedule),
+  });
+  if (!response.ok) {
+    let detail = await response.text().catch(() => response.statusText);
+    try {
+      const parsed = JSON.parse(detail);
+      detail = typeof parsed.detail === "string" ? parsed.detail : parsed.detail?.[0]?.msg || detail;
+    } catch {
+      // keep raw text
+    }
+    throw new Error(detail);
+  }
+  return response.json() as Promise<{
+    schedule: DoctorSchedule;
+    slots_removed: number;
+    slots_added: number;
+    booked_outside_new_hours: number;
+  }>;
+}
