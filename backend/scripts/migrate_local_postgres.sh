@@ -88,6 +88,7 @@ migration_files=(
   018_remove_off_schedule_seed_slots.sql
   019_add_blood_request_fields.sql
   020_appointment_change_tracking.sql
+  021_google_calendar_oauth.sql
 )
 
 existing_markers="$(run_psql -tAc 'SELECT COUNT(*) FROM schema_migrations;' | tr -d '[:space:]')"

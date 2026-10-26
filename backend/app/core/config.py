@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     # Google Calendar direct API token
     google_calendar_access_token: str = ""
 
+    # Google Calendar via OAuth: each doctor connects their own calendar.
+    # Create a "Web application" OAuth client in Google Cloud and register
+    # google_oauth_redirect_uri as an authorized redirect URI.
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = "http://localhost:8000/api/google/oauth/callback"
+    # Where the browser lands after connecting (the doctor's Settings page).
+    frontend_base_url: str = "http://localhost:3000"
+
     # Gemini extraction (Vision + text fallback)
     google_gemini_api_key: str = ""
     google_gemini_model: str = "gemini-2.5-flash"
