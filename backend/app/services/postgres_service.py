@@ -6,6 +6,7 @@ PostgreSQL service layer.
 This module replaces Supabase client calls with direct PostgreSQL access.
 """
 
+import logging
 import secrets
 from functools import lru_cache
 from contextlib import contextmanager
@@ -20,6 +21,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _database_url() -> str:
@@ -931,7 +934,7 @@ def list_doctor_availability(doctor_id: str) -> list[dict[str, Any]]:
             (doctor_id, now_dt),
         )
         rows = list(cur.fetchall())
-    open_rows = [row for row in rows if _slot_is_open(row, now_dt)]
+    open_rows = _drop_google_busy(doctor_id, [row for row in rows if _slot_is_open(row, now_dt)])
     return [
         {
             **row,
@@ -1600,6 +1603,17 @@ def update_appointment(appointment_id: str, payload: dict[str, Any]) -> dict[str
         {**payload, "updated_at": _utc_now_iso()},
         {"id": appointment_id},
     )
+
+
+def _drop_google_busy(doctor_id: str, slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hide open slots that clash with the doctor's Google Calendar (fails open)."""
+    try:
+        from app.services.google_calendar_service import drop_busy_slots
+
+        return drop_busy_slots(str(doctor_id), slots)
+    except Exception as exc:
+        logger.warning("Google busy-time filter skipped: %s", exc)
+        return slots
 
 
 def _calendar_sync(*appointment_ids: Any) -> None:
@@ -2643,9 +2657,7 @@ def _bookable_slots(
         if _is_sunday(start.astimezone(CLINIC_TZ).date()) or not _is_inside_working_hours(start):
             continue
         bookable.append(row)
-        if len(bookable) >= limit:
-            break
-    return bookable
+    return _drop_google_busy(doctor_id, bookable)[:limit]
 
 
 def get_available_slots_on_date(doctor_id: str, day: date) -> list[dict[str, Any]]:
@@ -2711,6 +2723,11 @@ def hold_slot_for_call(
     on_schedule = bool(
         slot and start_utc > datetime.now(timezone.utc) and _is_inside_working_hours(start_utc)
     )
+    if on_schedule and not _drop_google_busy(
+        doctor_id,
+        [{"slot_start": start_utc, "slot_end": start_utc + timedelta(minutes=SLOT_DURATION_MINUTES)}],
+    ):
+        on_schedule = False  # the doctor has something else in their calendar then
     held = None
     if on_schedule:
         held = reserve_slot(slot_id=str(slot["id"]), patient_id=patient_id, hold_minutes=hold_minutes)

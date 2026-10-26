@@ -4787,6 +4787,81 @@ async def doctor_upcoming_appointments_with_report(doctor_id: str):
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Google Calendar (per-doctor OAuth)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/doctors/{doctor_id}/google-calendar")
+async def google_calendar_status(doctor_id: str):
+    from app.services import google_calendar_service as gcal
+
+    doctor = await _resolve_doctor_or_404_async(doctor_id)
+    return await run_in_threadpool(gcal.get_connection_status, str(doctor["id"]))
+
+
+@router.post("/doctors/{doctor_id}/google-calendar/connect")
+async def google_calendar_connect(doctor_id: str):
+    """Returns the Google consent URL; the browser goes there to connect."""
+    from app.services import google_calendar_service as gcal
+
+    doctor = await _resolve_doctor_or_404_async(doctor_id)
+    try:
+        return {"auth_url": gcal.build_authorization_url(str(doctor["id"]))}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/google/oauth/callback")
+async def google_oauth_callback(
+    code: str | None = None, state: str | None = None, error: str | None = None
+):
+    """Google redirects here after consent; we store the tokens and send the
+    doctor back to Settings with the result."""
+    from urllib.parse import urlencode
+
+    from fastapi.responses import RedirectResponse
+
+    from app.services import google_calendar_service as gcal
+
+    def back(status: str, message: str | None = None) -> RedirectResponse:
+        query = {"google": status, **({"message": message} if message else {})}
+        return RedirectResponse(
+            f"{settings.frontend_base_url.rstrip('/')}/settings?{urlencode(query)}", status_code=302
+        )
+
+    if error:
+        return back("error", "Google sign-in was cancelled" if error == "access_denied" else error)
+    if not code or not state:
+        return back("error", "Missing code from Google")
+
+    try:
+        doctor_id = gcal.verify_state(state)
+        await run_in_threadpool(gcal.complete_oauth, doctor_id, code)
+    except Exception as exc:
+        logger.exception("Google Calendar connect failed")
+        return back("error", str(exc)[:200])
+
+    # Put already-booked upcoming appointments on the newly connected calendar.
+    try:
+        upcoming = await _run_db_call(db.list_doctor_upcoming_appointments_with_report, doctor_id)
+        gcal.queue_appointment_sync(
+            *(a["id"] for a in upcoming if a.get("status") in {"booked", "confirmed"})
+        )
+    except Exception as exc:
+        logger.warning("Initial Google Calendar sync failed: %s", exc)
+
+    return back("connected")
+
+
+@router.delete("/doctors/{doctor_id}/google-calendar", status_code=204)
+async def google_calendar_disconnect(doctor_id: str):
+    from app.services import google_calendar_service as gcal
+
+    doctor = await _resolve_doctor_or_404_async(doctor_id)
+    await run_in_threadpool(gcal.disconnect, str(doctor["id"]))
+
+
 @router.get("/doctors/{doctor_id}/appointment-activity")
 async def doctor_appointment_activity(doctor_id: str, days: int = 14):
     """Recent bookings, cancellations and reschedules, for the dashboard and bell."""
