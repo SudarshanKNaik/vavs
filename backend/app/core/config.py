@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     # Where the browser lands after connecting (the doctor's Settings page).
     frontend_base_url: str = "http://localhost:3000"
 
+    # Video consultations (browser-to-browser WebRTC). STUN finds a direct
+    # route; a TURN relay is only needed on networks that block direct
+    # connections. Leave TURN empty to use STUN only.
+    webrtc_stun_urls: str = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"
+    webrtc_turn_url: str = ""
+    webrtc_turn_username: str = ""
+    webrtc_turn_credential: str = ""
+
     # Gemini extraction (Vision + text fallback)
     google_gemini_api_key: str = ""
     google_gemini_model: str = "gemini-2.5-flash"

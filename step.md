@@ -276,6 +276,24 @@ A held time is reserved for 30 minutes, and the post-call booking turns it
 into an appointment. If the patient changes their mind, holding a new time
 releases the old one.
 
+### Languages (ask first, then switch)
+
+For the agent to speak Kannada, Odia, Hindi and so on:
+
+- **Agent tab → Voice / TTS model:** `Eleven v4 Turbo` (or v3). Flash v2 is
+  English-only, and Flash v2.5 / Multilingual v2 don't support Kannada or Odia.
+- **Agent tab → Additional languages:** add every language you need.
+- **Tools tab → add the system tool "Detect language"** (`language_detection`).
+  Without it the agent can't switch and stays in English.
+- **First message:** ask the language first, e.g. *"Hello {{patient_name}}, this
+  is CareSync calling on behalf of Dr. {{doctor_name}}. Which language would you
+  like to talk in? English, ಕನ್ನಡ, हिंदी, ଓଡ଼ିଆ, or another language?"*
+- **Prompt:** tell the agent to call `language_detection` as soon as the patient
+  names or speaks a language, then use only that language, and to record it in a
+  `preferred_language` data collection field.
+- **Security → Overrides → Language:** keep enabled. The backend saves each
+  patient's language after a call and starts their next call directly in it.
+
 ### 3. Data collection fields
 
 Set the descriptions so the agent records exactly what was held:

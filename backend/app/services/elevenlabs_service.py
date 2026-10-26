@@ -71,6 +71,7 @@ async def initiate_outbound_call(
     doctor_specialty: str | None = None,
     agent_id_override: str | None = None,
     phone_number_id_override: str | None = None,
+    language: str | None = None,
 ) -> dict[str, Any]:
     """
     Start an ElevenLabs Conversational AI outbound call to *patient_phone*.
@@ -84,6 +85,10 @@ async def initiate_outbound_call(
       - A phone number imported into ElevenLabs (Twilio integration) which
         gives you an ELEVENLABS_PHONE_NUMBER_ID
       - ELEVENLABS_API_KEY set in .env
+
+    ``language`` (e.g. "kn") starts the call in the patient's remembered
+    language, using that language's opening message, instead of asking. It
+    needs "Language" enabled under the agent's Security -> Overrides.
 
     Returns the ElevenLabs API response (includes ``conversation_id``).
     """
@@ -152,6 +157,10 @@ async def initiate_outbound_call(
             "dynamic_variables": dynamic_variables,
         },
     }
+    if language and language != "en":
+        payload["conversation_initiation_client_data"]["conversation_config_override"] = {
+            "agent": {"language": language}
+        }
 
     url = f"{ELEVENLABS_BASE}/convai/twilio/outbound-call"
     headers = {

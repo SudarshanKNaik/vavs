@@ -1853,3 +1853,21 @@ export async function saveDoctorSchedule(doctorId: string, schedule: DoctorSched
     booked_outside_new_hours: number;
   }>;
 }
+
+// ---------------------------------------------------------------------------
+// Video consultation (built-in 1:1 WebRTC call)
+// ---------------------------------------------------------------------------
+
+export async function getConsultationIceServers(): Promise<RTCIceServer[]> {
+  const response = await fetch(`${API_URL}/api/consultations/ice-servers`);
+  if (!response.ok) return [{ urls: ["stun:stun.l.google.com:19302"] }];
+  const data = (await response.json()) as { ice_servers: RTCIceServer[] };
+  return data.ice_servers;
+}
+
+/** WebSocket URL that relays call setup messages between doctor and patient. */
+export function consultationSignalUrl(appointmentId: string, actorRole: "doctor" | "patient", actorId: string) {
+  const base = API_URL.replace(/^http/, "ws");
+  const qs = new URLSearchParams({ actor_role: actorRole, actor_id: actorId });
+  return `${base}/api/consultations/${appointmentId}/signal?${qs.toString()}`;
+}

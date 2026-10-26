@@ -521,6 +521,8 @@ async def _handle_call_patient(node: dict, context: dict) -> tuple[bool, dict]:
                 # Offer these days first; read times only for the chosen day.
                 "available_dates": available_dates_str or available_slots_str,
             },
+            # Remembered from an earlier call: start in it instead of asking.
+            language=patient.get("preferred_language"),
         )
         conversation_id = result.get("conversation_id") or ""
         call_sid = result.get("callSid") or result.get("call_sid") or ""

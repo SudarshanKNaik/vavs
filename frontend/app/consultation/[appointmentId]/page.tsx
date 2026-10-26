@@ -12,6 +12,7 @@ import {
   type ConsultationRoom,
 } from "@/services/api";
 import { Button } from "@/components/ui/button";
+import { VideoCall } from "@/components/consultation/video-call";
 import { Loader2, MessageCircleMore } from "lucide-react";
 
 function formatDateTime(value: string) {
@@ -164,25 +165,8 @@ export default function ConsultationChatPage() {
       <section className="rounded-2xl border border-border bg-card shadow-sm">
         {room?.room_url && (
           <div className="border-b border-border p-4">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-sm font-medium">Video Consultation</p>
-              <a
-                href={room.room_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-primary hover:underline"
-              >
-                Open in new tab
-              </a>
-            </div>
-            <div className="overflow-hidden rounded-xl border border-border bg-muted/20">
-              <iframe
-                src={room.room_url}
-                title="Consultation video call"
-                allow="camera; microphone; display-capture; fullscreen"
-                className="h-[380px] w-full"
-              />
-            </div>
+            <p className="mb-2 text-sm font-medium">Video Consultation</p>
+            <VideoCall appointmentId={appointmentId} role={actorRole} actorId={actorId} />
           </div>
         )}
 

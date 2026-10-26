@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID
 
 import requests
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -1404,6 +1404,103 @@ async def get_or_create_consultation_room(
     return room
 
 
+# ---------------------------------------------------------------------------
+# Video consultation: our own 1:1 WebRTC call (replaces the meet.jit.si embed,
+# which forces the first person to sign in and cuts embedded calls short).
+# The server only relays connection messages between the doctor's and the
+# patient's browsers; audio and video flow directly between them.
+# ---------------------------------------------------------------------------
+
+# appointment_id -> {"doctor": WebSocket, "patient": WebSocket}
+_video_rooms: dict[str, dict[str, WebSocket]] = {}
+_video_rooms_lock = asyncio.Lock()
+# Only these message types are relayed, so the channel can't be used for anything else.
+_RELAYED_SIGNALS = {"offer", "answer", "ice", "hangup", "media-state"}
+
+
+@router.get("/consultations/ice-servers")
+async def consultation_ice_servers():
+    """STUN (and optional TURN) servers the browsers use to connect."""
+    servers: list[dict[str, Any]] = [
+        {"urls": [u.strip() for u in settings.webrtc_stun_urls.split(",") if u.strip()]}
+    ]
+    if settings.webrtc_turn_url.strip():
+        servers.append(
+            {
+                "urls": [u.strip() for u in settings.webrtc_turn_url.split(",") if u.strip()],
+                "username": settings.webrtc_turn_username,
+                "credential": settings.webrtc_turn_credential,
+            }
+        )
+    return {"ice_servers": servers}
+
+
+@router.websocket("/consultations/{appointment_id}/signal")
+async def consultation_signal(websocket: WebSocket, appointment_id: str, actor_role: str, actor_id: str):
+    appointment = await run_in_threadpool(db.get_appointment, appointment_id)
+    try:
+        if not appointment:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        role, _ = await run_in_threadpool(_validate_consultation_access, appointment, actor_role, actor_id)
+    except HTTPException as exc:
+        await websocket.close(code=4403, reason=str(exc.detail)[:120])
+        return
+
+    await websocket.accept()
+    other_role = "patient" if role == "doctor" else "doctor"
+
+    async with _video_rooms_lock:
+        room = _video_rooms.setdefault(appointment_id, {})
+        previous = room.get(role)
+        room[role] = websocket
+        other = room.get(other_role)
+    if previous is not None:
+        # Same person rejoined (refresh / second tab): the newest tab wins.
+        try:
+            await previous.send_json({"type": "replaced"})
+            await previous.close(code=4000)
+        except Exception:
+            pass
+
+    await websocket.send_json({"type": "joined", "role": role, "peer_present": other is not None})
+    if other is not None:
+        try:
+            # The one already waiting starts the connection (sends the offer).
+            await other.send_json({"type": "peer-joined", "role": role})
+        except Exception:
+            pass
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            if not isinstance(message, dict) or message.get("type") not in _RELAYED_SIGNALS:
+                continue
+            async with _video_rooms_lock:
+                target = _video_rooms.get(appointment_id, {}).get(other_role)
+            if target is not None:
+                try:
+                    await target.send_json({**message, "from": role})
+                except Exception:
+                    pass
+    except (WebSocketDisconnect, RuntimeError, ValueError):
+        pass
+    finally:
+        async with _video_rooms_lock:
+            room = _video_rooms.get(appointment_id, {})
+            if room.get(role) is websocket:
+                room.pop(role, None)
+                other = room.get(other_role)
+                if not room:
+                    _video_rooms.pop(appointment_id, None)
+            else:
+                other = None  # replaced by a newer tab; nothing changed for the peer
+        if other is not None:
+            try:
+                await other.send_json({"type": "peer-left", "role": role})
+            except Exception:
+                pass
+
+
 @router.get(
     "/appointments/{appointment_id}/messages",
     response_model=list[ConsultationMessageResponse],
@@ -2146,6 +2243,29 @@ def _extract_call_refs_from_execution_log(
     return conversation_id, call_sid
 
 
+# Languages the agents are set up for (ElevenLabs language codes).
+SUPPORTED_CALL_LANGUAGES = {"en", "kn", "hi", "or", "ta", "te", "ml", "mr", "bn", "gu", "pa", "as", "sd"}
+# The agent may record the language name instead of its code.
+_LANGUAGE_NAMES = {
+    "english": "en", "kannada": "kn", "hindi": "hi", "odia": "or", "oriya": "or",
+    "tamil": "ta", "telugu": "te", "malayalam": "ml", "marathi": "mr", "bengali": "bn",
+    "bangla": "bn", "gujarati": "gu", "punjabi": "pa", "assamese": "as", "sindhi": "sd",
+}
+
+
+def _remember_patient_language(call_log: dict[str, Any] | None, language: str) -> None:
+    """Save the language a call was held in, so the next call starts in it."""
+    raw = (language or "").strip().lower()
+    code = _LANGUAGE_NAMES.get(raw, raw[:5])
+    patient_id = (call_log or {}).get("patient_id")
+    if not patient_id or code not in SUPPORTED_CALL_LANGUAGES:
+        return
+    try:
+        db.update_patient(str(patient_id), {"preferred_language": code})
+    except Exception as exc:
+        logger.warning("Could not save preferred language for patient %s: %s", patient_id, exc)
+
+
 def _normalize_dcr_value(entry: Any) -> str:
     """Normalize ElevenLabs DCR values and guard against stringified null-like values."""
     value = entry.get("value", "") if isinstance(entry, dict) else entry
@@ -2609,6 +2729,7 @@ async def _auto_poll_call_result(
             confirmed_time = _dcr_val("confirmed_time")
             doctor_name = _dcr_val("doctor_name")
             availability_notes = _dcr_val("patient_availability_notes")
+            _remember_patient_language(call_log, _dcr_val("preferred_language"))
 
             # Transcript may be a string or a list of message dicts
             raw_transcript = conversation.get("transcript", "")
@@ -3380,6 +3501,7 @@ async def elevenlabs_webhook(request: Request):
         return {"success": False, "error": "no matching call_log"}
 
     log_id = call_log["id"]
+    _remember_patient_language(call_log, _dcr_val("preferred_language"))
     logger.info(
         "[11L][webhook][matched_call_log] call_log_id=%s workflow_id=%s patient_id=%s",
         log_id,
@@ -4022,6 +4144,7 @@ async def check_call_status(log_id: str):
     confirmed_time = _dcr_val("confirmed_time")
     doctor_name = _dcr_val("doctor_name")
     availability_notes = _dcr_val("patient_availability_notes")
+    _remember_patient_language(call_log, _dcr_val("preferred_language"))
     transcript = conversation.get("transcript", "")
 
     patient_confirmed = patient_confirmed_raw.lower() in ("true", "yes", "1")

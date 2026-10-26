@@ -93,6 +93,8 @@ migration_files=(
   023_create_ngo_portal_tables.sql
   024_create_ngo_email_otps.sql
   025_add_ngo_darpan_id.sql
+  026_patient_preferred_language.sql
+  027_webrtc_consultation_rooms.sql
 )
 
 existing_markers="$(run_psql -tAc 'SELECT COUNT(*) FROM schema_migrations;' | tr -d '[:space:]')"
