@@ -187,7 +187,7 @@ These run inside the API process, so a restart stops in-flight campaigns. See
 | **OpenRouter** | LLM for "describe a workflow in plain English" | `openrouter.ai/api/v1` | `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (default `deepseek/deepseek-v3.2`) |
 | **Deepgram** | Speech-to-text for voice input in the workflow builder | `api.deepgram.com/v1/listen` | `DEEPGRAM_API_KEY`, `DEEPGRAM_MODEL` (default `nova-3`) |
 | **Gmail SMTP** | OTP codes and email notifications | `smtp.gmail.com:587` (STARTTLS) | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL` |
-| **Google Calendar API** | Calendar event per booking (optional) | `www.googleapis.com/calendar/v3` | `GOOGLE_CALENDAR_ACCESS_TOKEN` |
+| **Google Calendar API + OAuth 2.0** | Per-doctor connection (Settings): events created, moved and deleted with bookings; free/busy hides clashing slots | `www.googleapis.com/calendar/v3`, `accounts.google.com`, `oauth2.googleapis.com` | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI`, `FRONTEND_BASE_URL` |
 | **OpenStreetMap Nominatim** | Geocoding donor, NGO and hospital addresses | `nominatim.openstreetmap.org/search` | none (public, rate-limited) |
 | **OpenStreetMap tiles** | Map tiles for the blood campaign map | `tile.openstreetmap.org` | none |
 | **Jitsi Meet** | Video room for teleconsultations | `meet.jit.si` | none |

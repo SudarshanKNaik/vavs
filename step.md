@@ -197,13 +197,39 @@ these keys:
 | Blood campaign calls (optional separate agent) | `ELEVENLABS_BLOOD_AGENT_ID`. If blank, blood campaigns use `ELEVENLABS_AGENT_ID` |
 | Telephony and SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` |
 | OTP login and emails | `SMTP_USERNAME`, `SMTP_PASSWORD` (Gmail app password), `SMTP_FROM_EMAIL` |
-| Calendar events | `GOOGLE_CALENDAR_ACCESS_TOKEN` |
+| Google Calendar sync and busy-time blocking | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` (see [Google Calendar](#google-calendar)) |
 | Lab report extraction | `GOOGLE_GEMINI_API_KEY` |
 | AI workflow builder | `OPENROUTER_API_KEY` |
 | Voice input | `DEEPGRAM_API_KEY` |
 | Webhooks (ElevenLabs callbacks) | `APP_BASE_URL`: must be a public URL (e.g. an ngrok tunnel to port 8000) |
 
 Don't commit `backend/.env`. It is already listed in `backend/.gitignore`.
+
+## Google Calendar
+
+Each doctor connects their own Google Calendar in **Settings → Google Calendar
+→ Connect**. After that:
+
+- bookings appear as events, cancelled ones are deleted, and reschedules move;
+- anything already in the doctor's calendar hides those slots from patients and
+  the call agent.
+
+One-time setup in [Google Cloud Console](https://console.cloud.google.com/):
+
+1. **APIs & Services → Library:** enable the **Google Calendar API**.
+2. **OAuth consent screen:** add the scopes `.../auth/calendar.events` and
+   `.../auth/calendar.freebusy`. While the app is in "Testing", add each
+   doctor's Google account under **Test users**.
+3. **Credentials → your OAuth client (Web application):** add
+   `http://localhost:8000/api/google/oauth/callback` under **Authorized
+   redirect URIs**. Use your public backend URL in production.
+4. Copy the **Client secret** into `backend/.env` as
+   `GOOGLE_OAUTH_CLIENT_SECRET`, then restart the backend. The client ID is
+   already set as `GOOGLE_OAUTH_CLIENT_ID`.
+
+The old `GOOGLE_CALENDAR_ACCESS_TOKEN` is only a fallback for the workflow
+"schedule appointment" node, and it must be an OAuth access token. An API
+key (`AIza…`) can't write to calendars.
 
 ## Setting up the AI call agent (ElevenLabs dashboard)
 

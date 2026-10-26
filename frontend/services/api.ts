@@ -1763,3 +1763,46 @@ export async function getBloodCampaignMap(campaignId: string) {
   }
   return response.json() as Promise<BloodCampaignMapPayload>;
 }
+
+// ---------------------------------------------------------------------------
+// Google Calendar (per-doctor OAuth connection)
+// ---------------------------------------------------------------------------
+
+export interface GoogleCalendarStatus {
+  connected: boolean;
+  oauth_configured: boolean;
+  google_email?: string | null;
+  calendar_id?: string;
+  connected_at?: string | null;
+  last_error?: string | null;
+}
+
+export async function getGoogleCalendarStatus(doctorId: string) {
+  const response = await fetch(`${API_URL}/api/doctors/${doctorId}/google-calendar`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to load Google Calendar status (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<GoogleCalendarStatus>;
+}
+
+export async function startGoogleCalendarConnect(doctorId: string) {
+  const response = await fetch(`${API_URL}/api/doctors/${doctorId}/google-calendar/connect`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Could not start Google sign-in (${response.status}): ${detail}`);
+  }
+  return response.json() as Promise<{ auth_url: string }>;
+}
+
+export async function disconnectGoogleCalendar(doctorId: string) {
+  const response = await fetch(`${API_URL}/api/doctors/${doctorId}/google-calendar`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new Error(`Failed to disconnect Google Calendar (${response.status}): ${detail}`);
+  }
+}

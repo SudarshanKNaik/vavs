@@ -3,6 +3,7 @@
 import { useLocalAuth } from "@/lib/local-auth";
 import { Button } from "@/components/ui/button";
 import { User, Mail, Shield, LogOut, ExternalLink } from "lucide-react";
+import { GoogleCalendarCard } from "@/components/app/google-calendar-card";
 
 export default function SettingsPage() {
   const { user, isAuthenticated, logout } = useLocalAuth();
@@ -54,6 +55,9 @@ export default function SettingsPage() {
           )}
         </div>
       </div>
+
+      {/* Google Calendar */}
+      {user?.role === "doctor" && <GoogleCalendarCard doctorId={user.doctor_id || user.sub} />}
 
       {/* App info */}
       <div className="rounded-xl border border-border bg-card">
