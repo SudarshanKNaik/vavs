@@ -4,7 +4,7 @@ Three things need to be running:
 
 | Part | What it is | URL |
 |---|---|---|
-| Database | PostgreSQL 16 in Docker (container `caresync-postgres`) | `localhost:5432` |
+| Database | PostgreSQL 16 in Docker (container `caresync-vavs-postgres`) | `localhost:5433` |
 | Backend | FastAPI (Python 3.11) | http://localhost:8000 |
 | Frontend | Next.js | http://localhost:3000 |
 
@@ -24,6 +24,11 @@ You can leave every API key blank for now. The app starts without them, and
 each feature that needs a key reports that it is "not configured" when used.
 See [Adding API keys later](#adding-api-keys-later).
 
+> **Already have a `backend/.env` from before?** The database moved to port
+> **5433**. Make sure the first line reads
+> `DATABASE_URL=postgresql://postgres:postgres@localhost:5433/caresync_local`.
+> An old `.env` with `5432` connects to a different Postgres (or none at all).
+
 ## Step 2: Start the database and backend
 
 Run this from the project root in its own terminal:
@@ -34,7 +39,7 @@ backend/scripts/bootstrap_local_backend.sh
 
 The script:
 
-1. Starts the `caresync-postgres` container. If it is already running, the script reuses it.
+1. Starts the `caresync-vavs-postgres` container on port 5433, creating it on the first run. If it is already running, the script reuses it.
 2. Applies any pending SQL migrations from `backend/migrations/`. Migrations that already ran are skipped.
 3. Creates `backend/.venv` and installs the Python packages (first run only).
 4. Starts the API on port 8000 with auto-reload.
@@ -53,7 +58,7 @@ API docs: http://localhost:8000/docs
 ### Starting the backend by hand (after the first run)
 
 ```bash
-docker start caresync-postgres          # if the DB isn't running
+docker start caresync-vavs-postgres     # if the DB isn't running
 cd backend
 source .venv/bin/activate
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -78,24 +83,42 @@ backend, create `frontend/.env.local` with:
 NEXT_PUBLIC_API_URL=https://your-backend-url
 ```
 
-## Demo doctor login
+## Demo logins
 
 Signing up needs an email OTP, which only works once SMTP is configured. For
-local testing, use this account (created directly in the database):
+local testing, use these accounts (created directly in the database):
 
-| Field | Value |
-|---|---|
-| Page | http://localhost:3000/signIn |
-| Email | `doctor@caresync.local` |
-| Password | `Doctor@123` |
-| Linked doctor | Dr. Ananya Kulkarni, General Physician (`d63f7abf-4a70-49e4-b78b-5a79bb8f1f18`) |
+| | Doctor | Patient |
+|---|---|---|
+| Page | http://localhost:3000/signIn | http://localhost:3000/patient-signIn |
+| Email | `doctor@caresync.local` | `patient@caresync.local` |
+| Password | `Doctor@123` | `Patient@123` |
+| Who | Dr. Ananya Kulkarni, General Physician | Rahul Patil (`+919000000002`) |
 
-This is a local-only test account. Passwords are currently stored in plain
-text (see `PRODUCT_DIRECTION.md`), so never reuse a real password here. If you
-reset the database, the account is deleted. Recreate it with:
+The patient is assigned to the demo doctor, so Rahul Patil appears in the
+doctor's patient list, and bookings from the patient portal show up on the
+doctor's side.
+
+The doctor's ID is generated when the seed data runs, so it differs between
+databases. Look it up with:
 
 ```bash
-docker exec -i caresync-postgres psql -U postgres -d caresync_local <<'SQL'
+curl -s http://localhost:8000/api/doctors | grep -o '"id":"[^"]*","name":"Dr. Ananya[^"]*"'
+```
+
+The patient's phone number is a placeholder. Change it to your own number
+before you test AI calls or SMS, or the call goes to a number that doesn't
+exist.
+
+These are local-only test accounts. Passwords are currently stored in plain
+text (see `PRODUCT_DIRECTION.md`), so never reuse a real password here.
+
+### Recreating the demo accounts
+
+A new or reset database has no accounts. Create both with:
+
+```bash
+docker exec -i caresync-vavs-postgres psql -U postgres -d caresync_local <<'SQL'
 WITH acct AS (
   INSERT INTO user_accounts (role, email, username, mobile, password)
   VALUES ('doctor', 'doctor@caresync.local', 'Dr. Ananya Kulkarni', '+919000000001', 'Doctor@123')
@@ -103,29 +126,7 @@ WITH acct AS (
 )
 UPDATE doctors SET auth_user_id = (SELECT id::text FROM acct)
 WHERE name LIKE 'Dr. Ananya Kulkarni%';
-SQL
-```
 
-## Demo patient login
-
-| Field | Value |
-|---|---|
-| Page | http://localhost:3000/patient-signIn |
-| Email | `patient@caresync.local` |
-| Password | `Patient@123` |
-| Patient | Rahul Patil (`+919000000002`), assigned to the demo doctor, Dr. Ananya Kulkarni |
-
-Because the patient belongs to the demo doctor, you see Rahul Patil in the
-doctor's patient list, and bookings from the patient portal show up on the
-doctor's side.
-
-The phone number is a placeholder. Change it to your own number before you
-test AI calls or SMS, or the call goes to a number that doesn't exist.
-
-To recreate the account after a database reset (run the doctor command first):
-
-```bash
-docker exec -i caresync-postgres psql -U postgres -d caresync_local <<'SQL'
 WITH acct AS (
   INSERT INTO user_accounts (role, email, username, mobile, password)
   VALUES ('patient', 'patient@caresync.local', 'Rahul Patil', '+919000000002', 'Patient@123')
@@ -147,17 +148,17 @@ Open Docker Desktop, then go to **Containers**. Check these:
 
 | Check | Expected |
 |---|---|
-| Container `caresync-postgres` | Status **Running**, labelled **(healthy)** |
-| Port | `5432:5432` |
+| Container `caresync-vavs-postgres` | Status **Running**, labelled **(healthy)** |
+| Port | `5433:5432` (your machine's port 5433 → Postgres's 5432 inside the container) |
 | Image | `postgres:16.6` |
-| Volume | `vavs_postgres_data` (or `<folder>_postgres_data`) holds the database files |
+| Volume | `vavs_postgres_data` holds the database files |
 
 Useful commands:
 
 ```bash
-docker ps --filter name=caresync-postgres     # is it running and healthy?
-docker logs caresync-postgres --tail 50       # database logs
-docker exec -it caresync-postgres psql -U postgres -d caresync_local   # SQL shell
+docker ps --filter name=caresync-vavs-postgres     # is it running and healthy?
+docker logs caresync-vavs-postgres --tail 50       # database logs
+docker exec -it caresync-vavs-postgres psql -U postgres -d caresync_local   # SQL shell
 ```
 
 Inside the SQL shell:
@@ -169,14 +170,12 @@ SELECT name, specialty FROM doctors;   -- seeded doctors
 \q                                     -- quit
 ```
 
-### Note: one container shared between project copies
+### Other `caresync-postgres` containers
 
-The container name `caresync-postgres` and port `5432` are fixed in
-`docker-compose.yml`. If another copy of this project on your machine already
-created the container, both copies use the same database. The
-bootstrap script detects that container and reuses it. If you want a fresh
-database for this copy, delete the container from the other copy first, then
-run the reset script below.
+Older versions of this project used a container named `caresync-postgres` on
+port 5432. If another copy of the project on your machine still runs one, you'll see it in
+Docker Desktop too. It doesn't affect this copy, which uses only
+`caresync-vavs-postgres` on 5433. Leave it running if the other copy needs it.
 
 ### Resetting the database
 
@@ -184,7 +183,8 @@ run the reset script below.
 backend/scripts/reset_local_db.sh --yes
 ```
 
-This deletes all local data and rebuilds the schema and seed data.
+This deletes all local data and rebuilds the schema and seed data. Afterwards,
+[recreate the demo accounts](#recreating-the-demo-accounts).
 
 ## Adding API keys later
 
@@ -194,6 +194,7 @@ these keys:
 | Feature | Keys in `backend/.env` |
 |---|---|
 | AI voice calls | `ELEVENLABS_API_KEY`, `ELEVENLABS_AGENT_ID`, `ELEVENLABS_PHONE_NUMBER_ID`, `ELEVENLABS_WEBHOOK_SECRET` |
+| Blood campaign calls (optional separate agent) | `ELEVENLABS_BLOOD_AGENT_ID`. If blank, blood campaigns use `ELEVENLABS_AGENT_ID` |
 | Telephony and SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER` |
 | OTP login and emails | `SMTP_USERNAME`, `SMTP_PASSWORD` (Gmail app password), `SMTP_FROM_EMAIL` |
 | Calendar events | `GOOGLE_CALENDAR_ACCESS_TOKEN` |
@@ -208,9 +209,10 @@ Don't commit `backend/.env`. It is already listed in `backend/.gitignore`.
 
 | Problem | Fix |
 |---|---|
-| `container name "/caresync-postgres" is already in use` | Another project copy owns the container. The bootstrap script now reuses it. If you use `docker compose up` directly, run `docker start caresync-postgres` instead. |
-| `port 5432 is already allocated` | Another Postgres is running. Stop it, or check `lsof -i :5432` |
-| `/health` shows `"database":"unreachable"` | The DB container is stopped. Run `docker start caresync-postgres` |
+| `container name "/caresync-vavs-postgres" is already in use` | The container exists but wasn't created by `docker compose`. The bootstrap script reuses it. If you use `docker compose up` directly, run `docker start caresync-vavs-postgres` instead. |
+| `port 5433 is already allocated` | Something else is using port 5433. Find it with `lsof -i :5433` |
+| `/health` shows `"database":"unreachable"` | The DB container is stopped (`docker start caresync-vavs-postgres`), or `backend/.env` still points at port 5432 |
+| Login says `Invalid email or password` for the demo accounts | The database is new or was reset. [Recreate the demo accounts](#recreating-the-demo-accounts) |
 | `Address already in use` / `Port 8000 is already in use` | A backend is already running. Find it with `lsof -i :8000`, then `kill <PID>` |
 | `Port 3000 is in use ... using 3001` followed by `Unable to acquire lock at .next/dev/lock` | Another `next dev` is already running for this folder. Find it with `lsof -i :3000`, `kill <PID>`, then run `npm run dev` again |
 | Frontend loads but shows no data | The backend isn't running. Check http://localhost:8000/health |
