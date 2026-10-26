@@ -243,8 +243,15 @@ export default function BloodRequestsPage() {
   useEffect(() => {
     if (!doctorId) return;
     const saved = loadDefaults(doctorId);
+    // Links such as Outbreak Watch's platelet forecast pre-fill the request.
+    const params = new URLSearchParams(window.location.search);
+    const component = COMPONENTS.find((c) => c.value === params.get("component"))?.value;
+    const urgency = URGENCIES.find((u) => u.value === params.get("urgency"))?.value;
     setForm((prev) => ({
       ...prev,
+      ...(component && { component }),
+      ...(urgency && { urgency }),
+      ...(params.get("reason") && { reason: params.get("reason") as string }),
       ...saved,
       contact_name: saved.contact_name || user?.name || "",
       contact_phone: saved.contact_phone || user?.mobile || "",

@@ -11,6 +11,7 @@ const navItems = [
   { href: "/triggers", label: "Workflows & Triggers", icon: "zap" },
   { href: "/patients", label: "Patients", icon: "users" },
   { href: "/blood-requests", label: "Blood Requests", icon: "droplet" },
+  { href: "/outbreak-watch", label: "Outbreak Watch", icon: "radar" },
   { href: "/calls", label: "Call Log", icon: "phone" },
   { href: "/follow-ups", label: "Follow-up Cron", icon: "clock" },
   { href: "/availability", label: "Manage Availability", icon: "clock" },
