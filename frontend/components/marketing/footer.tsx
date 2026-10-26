@@ -26,7 +26,7 @@ export function Footer() {
         <div className="grid gap-12 sm:grid-cols-2 lg:grid-cols-[2fr_1fr_1fr_1fr]">
           {/* Brand column */}
           <div>
-            <div className="flex items-center gap-3">
+            <Link href="/" className="flex w-fit items-center gap-3">
               <svg viewBox="0 0 28 28" fill="none" className="h-6 w-6 shrink-0">
                 <circle cx="14" cy="14" r="13" stroke="#2C2420" strokeWidth="1.5" />
                 <path d="M14 7v14M7 14h14" stroke="#2C2420" strokeWidth="1.5" strokeLinecap="round" />
@@ -34,7 +34,7 @@ export function Footer() {
               <span className="font-serif text-lg tracking-wide text-[#2C2420]">
                 CareSync AI
               </span>
-            </div>
+            </Link>
             <p className="mt-4 max-w-xs text-[13px] leading-[1.75] text-[#8C7B70]">
               Intelligent clinical workflow automation. From trigger to booking in
               under five minutes.

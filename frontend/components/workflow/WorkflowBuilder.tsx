@@ -1334,7 +1334,7 @@ function FlowContent() {
       <header className="h-12 shrink-0 flex items-center justify-between px-4 border-b border-border bg-card">
         <div className="flex items-center gap-2">
           <Link
-            href="/dashboard"
+            href="/"
             className="flex items-center gap-2 font-serif text-2xl tracking-tight text-foreground"
           >
             <Image
