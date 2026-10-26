@@ -433,20 +433,22 @@ def build_brief(summary: dict[str, Any]) -> str:
 # Demo data
 # ---------------------------------------------------------------------------
 
-# (locality, syndrome, background cases per day, extra cases per day in the last 7 days)
+# (locality, syndrome, background cases per day, fixed daily cases over the last
+# 7 days, oldest first). Clusters are fixed so every demo shows the same
+# picture: two dengue alerts, a diarrhoea alert and one area on watch.
 _DEMO_PATTERN = [
-    ("Old Hubli", "dengue_like", 0.10, 2.2),
-    ("Keshwapur", "dengue_like", 0.10, 0.9),
-    ("Anand Nagar", "dengue_like", 0.05, 0.3),
-    ("Navanagar", "gastro", 0.10, 1.3),
-    ("Vidyanagar", "respiratory", 0.35, 0.0),
-    ("Gokul Road", "respiratory", 0.20, 0.0),
-    ("Deshpande Nagar", "dengue_like", 0.08, 0.0),
-    ("Unkal", "gastro", 0.10, 0.0),
-    ("Saptapur", "respiratory", 0.20, 0.0),
-    ("Vidyagiri", "fever", 0.15, 0.0),
-    ("Gopankoppa", "fever", 0.12, 0.0),
-    ("Tarihal", "gastro", 0.08, 0.0),
+    ("Old Hubli", "dengue_like", 0.10, [0, 1, 1, 2, 2, 3, 3]),
+    ("Keshwapur", "dengue_like", 0.10, [0, 0, 1, 1, 1, 2, 2]),
+    ("Navanagar", "gastro", 0.10, [0, 0, 1, 1, 2, 3, 2]),
+    ("Anand Nagar", "dengue_like", 0.04, [0, 0, 1, 0, 1, 1, 1]),
+    ("Vidyanagar", "respiratory", 0.35, None),
+    ("Gokul Road", "respiratory", 0.20, None),
+    ("Deshpande Nagar", "dengue_like", 0.08, None),
+    ("Unkal", "gastro", 0.10, None),
+    ("Saptapur", "respiratory", 0.20, None),
+    ("Vidyagiri", "fever", 0.15, None),
+    ("Gopankoppa", "fever", 0.12, None),
+    ("Tarihal", "gastro", 0.08, None),
 ]
 _DEMO_SYMPTOMS = {
     "dengue_like": [["fever", "body_pain", "headache"], ["fever", "eye_pain", "body_pain"],
@@ -467,7 +469,7 @@ def _poisson_draw(rng: random.Random, lam: float) -> int:
 
 
 def load_demo_data(doctor_id: str) -> int:
-    """Replace this doctor's demo reports with five weeks of sample data containing two clusters."""
+    """Replace this doctor's demo reports with five weeks of sample data containing clusters."""
     db.delete_demo_symptom_reports(doctor_id)
     rng = random.Random(f"outbreak-demo:{doctor_id}")
     today = datetime.now(timezone.utc).astimezone(db.CLINIC_TZ).date()
@@ -475,10 +477,12 @@ def load_demo_data(doctor_id: str) -> int:
     for days_ago in range(HISTORY_DAYS - 1, -1, -1):
         day = today - timedelta(days=days_ago)
         in_window = days_ago < WINDOW_DAYS
-        for locality, syndrome, background, surge in _DEMO_PATTERN:
-            # Surges build up over the week rather than appearing all at once.
-            ramp = (WINDOW_DAYS - days_ago) / WINDOW_DAYS if in_window else 0.0
-            for _ in range(_poisson_draw(rng, background + surge * ramp * 1.6)):
+        for locality, syndrome, background, cluster in _DEMO_PATTERN:
+            if cluster and in_window:
+                count = cluster[WINDOW_DAYS - 1 - days_ago]
+            else:
+                count = _poisson_draw(rng, background)
+            for _ in range(count):
                 name, lat, lon = locate(locality)
                 reported = datetime.combine(day, time(rng.randint(9, 18), rng.randint(0, 59)), tzinfo=db.CLINIC_TZ)
                 if reported > datetime.now(timezone.utc):
