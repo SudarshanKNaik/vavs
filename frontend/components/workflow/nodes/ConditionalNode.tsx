@@ -3,10 +3,12 @@
 import { useState, useCallback, useRef } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { type WorkflowNodeData } from '../types';
+import { CustomTag, isCustomNodeType } from './CustomTag';
 import { useCmdHover } from '../CmdHoverContext';
 
 export default function ConditionalNode({ data, selected }: NodeProps) {
   const d = data as unknown as WorkflowNodeData;
+  const isCustom = isCustomNodeType(d.nodeType);
   const condition = d.params?.condition;
   const { cmdHeld, setHandle } = useCmdHover();
   const [hoverSide, setHoverSide] = useState<'left' | 'right' | null>(null);
@@ -37,7 +39,7 @@ export default function ConditionalNode({ data, selected }: NodeProps) {
       onMouseMove={onMouseMove}
       onMouseLeave={onMouseLeave}
       className={`
-        min-w-[200px] rounded-xl border-2 px-4 py-3
+        min-w-[200px] rounded-xl border-2 px-4 py-3 ${isCustom ? "border-dashed" : ""}
         bg-card relative overflow-hidden
         transition-all duration-150
         ${selected
@@ -70,13 +72,14 @@ export default function ConditionalNode({ data, selected }: NodeProps) {
       {/* Header */}
       <div className="relative flex items-center gap-2 mb-2">
         <span className="text-[10px] text-amber-600 uppercase tracking-widest font-bold">Condition</span>
+        {isCustom && <CustomTag />}
       </div>
 
       {/* Label */}
       <p className="relative text-sm font-semibold text-foreground leading-tight">{d.label}</p>
 
       {/* Node type */}
-      <p className="relative text-[11px] text-amber-400 font-mono mt-1 truncate">{d.nodeType}</p>
+      <p className="relative text-[11px] text-amber-400 font-mono mt-1 truncate">{isCustom ? "Not automated · skipped on run" : d.nodeType}</p>
 
       {/* Condition expression preview */}
       {condition && (

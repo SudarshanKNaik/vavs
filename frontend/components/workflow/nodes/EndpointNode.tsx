@@ -2,6 +2,7 @@
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { type WorkflowNodeData } from '../types';
+import { CustomTag, isCustomNodeType } from './CustomTag';
 
 const NODE_TYPE_STYLES: Record<
   string,
@@ -25,12 +26,13 @@ const DEFAULT_STYLE = NODE_TYPE_STYLES.log_completion;
 
 export default function EndpointNode({ data, selected }: NodeProps) {
   const d = data as unknown as WorkflowNodeData;
+  const isCustom = isCustomNodeType(d.nodeType);
   const style = NODE_TYPE_STYLES[d.nodeType] ?? DEFAULT_STYLE;
 
   return (
     <div
       className={`
-        min-w-[176px] rounded-xl border-2 px-4 py-3
+        min-w-[176px] rounded-xl border-2 px-4 py-3 ${isCustom ? "border-dashed" : ""}
         bg-card
         transition-all duration-150
         ${selected
@@ -49,13 +51,14 @@ export default function EndpointNode({ data, selected }: NodeProps) {
       {/* Header */}
       <div className="flex items-center gap-2 mb-2">
         <span className={`text-[10px] uppercase tracking-widest font-bold ${style.accent}`}>Output</span>
+        {isCustom && <CustomTag />}
       </div>
 
       {/* Label */}
       <p className="text-sm font-semibold text-foreground leading-tight">{d.label}</p>
 
       {/* Node type */}
-      <p className={`text-[11px] font-mono mt-1 truncate ${style.accent} opacity-50`}>{d.nodeType}</p>
+      <p className={`text-[11px] font-mono mt-1 truncate ${style.accent} opacity-50`}>{isCustom ? "Not automated · skipped on run" : d.nodeType}</p>
     </div>
   );
 }

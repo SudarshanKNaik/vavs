@@ -1003,11 +1003,12 @@ function FlowContent() {
         doctor_id: doctorId,
       });
 
-      const generatedNodes = Array.isArray(generated.nodes)
-        ? (generated.nodes as Node[])
-        : [];
       const generatedEdges = Array.isArray(generated.edges)
         ? (generated.edges as Edge[])
+        : [];
+      // Lay out top-to-bottom so if/else branches sit side by side.
+      const generatedNodes = Array.isArray(generated.nodes)
+        ? getLayoutedElements(generated.nodes as Node[], generatedEdges).nodes
         : [];
 
       setNodes(generatedNodes);

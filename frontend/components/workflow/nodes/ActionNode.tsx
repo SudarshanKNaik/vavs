@@ -2,15 +2,17 @@
 
 import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { type WorkflowNodeData } from '../types';
+import { CustomTag, isCustomNodeType } from './CustomTag';
 
 export default function ActionNode({ data, selected }: NodeProps) {
   const d = data as unknown as WorkflowNodeData;
+  const isCustom = isCustomNodeType(d.nodeType);
   const paramKeys = Object.keys(d.params ?? {});
 
   return (
     <div
       className={`
-        min-w-[192px] rounded-xl border-2 px-4 py-3
+        min-w-[192px] rounded-xl border-2 px-4 py-3 ${isCustom ? "border-dashed" : ""}
         bg-card
         transition-all duration-150
         ${selected
@@ -29,13 +31,14 @@ export default function ActionNode({ data, selected }: NodeProps) {
       {/* Header */}
       <div className="flex items-center gap-2 mb-2">
         <span className="text-[10px] text-purple-600 uppercase tracking-widest font-bold">Action</span>
+        {isCustom && <CustomTag />}
       </div>
 
       {/* Label */}
       <p className="text-sm font-semibold text-foreground leading-tight">{d.label}</p>
 
       {/* Node type */}
-      <p className="text-[11px] text-purple-400 font-mono mt-1 truncate">{d.nodeType}</p>
+      <p className="text-[11px] text-purple-400 font-mono mt-1 truncate">{isCustom ? "Not automated · skipped on run" : d.nodeType}</p>
 
       {/* Param preview */}
       {paramKeys.length > 0 && (

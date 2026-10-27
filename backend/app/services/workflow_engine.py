@@ -104,7 +104,8 @@ def _find_trigger_node(nodes: list[dict]) -> dict | None:
         node_type = node.get("data", {}).get("nodeType", "") or node.get("type", "")
         if node_type in TRIGGER_TYPES:
             return node
-    return None
+    # A custom trigger drafted by the AI builder still marks where the flow starts.
+    return next((n for n in nodes if n.get("type") == "trigger"), None)
 
 
 def _get_successors(
@@ -1142,6 +1143,10 @@ async def _dispatch(node: dict, context: dict) -> tuple[bool, dict]:
         handler = _ACTION_HANDLERS.get(node_type, _handle_generic_action)
         return await handler(node, context)
 
+    if node_type.startswith("custom_"):
+        label = node.get("data", {}).get("label") or node_type
+        return True, _step_log(node, "skipped", f"Custom step '{label}' isn't automated yet — skipped")
+
     return True, _step_log(
         node, "skipped", f"Unknown node type '{node_type}' — skipped"
     )
@@ -1239,6 +1244,9 @@ async def execute_workflow(
         condition_passed: bool | None = None
         if node_type in CONDITION_TYPES:
             condition_passed = ok
+        elif node_type == "custom_condition":
+            # Can't be evaluated, so run neither branch rather than both.
+            continue
 
         successors = _get_successors(
             current_id,
