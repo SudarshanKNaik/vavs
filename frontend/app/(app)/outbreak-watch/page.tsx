@@ -1,6 +1,5 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -36,12 +35,6 @@ import {
 } from "@/services/api";
 import { TrendChart } from "@/components/outbreak/TrendChart";
 import { LEVELS, SYNDROME_COLORS, SYNDROME_SHORT } from "@/components/outbreak/theme";
-import type { OutbreakMapPoint } from "@/components/outbreak/OutbreakMap";
-
-const OutbreakMap = dynamic(() => import("@/components/outbreak/OutbreakMap"), {
-  ssr: false,
-  loading: () => <div className="h-full min-h-[420px] w-full animate-pulse bg-muted" />,
-});
 
 type Filter = "all" | Exclude<SyndromeKey, "fever">;
 
@@ -166,22 +159,12 @@ function Kpi({
 
 function SignalCard({
   signal,
-  selected,
-  onSelect,
 }: {
   signal: OutbreakSignal;
-  selected: boolean;
-  onSelect: () => void;
 }) {
   const newCluster = signal.expected < 1;
   return (
-    <button
-      onClick={onSelect}
-      className={cn(
-        "w-full rounded-xl border bg-background p-4 text-left transition-colors hover:border-foreground/30",
-        selected ? "border-foreground/60 ring-1 ring-foreground/20" : "border-border",
-      )}
-    >
+    <div className="rounded-xl border border-border bg-background p-4">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -207,7 +190,7 @@ function SignalCard({
       <p className="mt-1 text-xs text-muted-foreground">
         {signal.previous_week} the week before · a rise this large happens by chance {signal.chance}
       </p>
-    </button>
+    </div>
   );
 }
 
@@ -219,7 +202,6 @@ export default function OutbreakWatchPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
-  const [selectedArea, setSelectedArea] = useState<string | null>(null);
   const [busy, setBusy] = useState<"demo" | "clear" | "email" | null>(null);
   const [copied, setCopied] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
@@ -255,36 +237,6 @@ export default function OutbreakWatchPage() {
   const alerts = (summary?.signals || []).filter((s) => s.level === "alert");
   const watches = (summary?.signals || []).filter((s) => s.level === "watch");
 
-  const mapPoints: OutbreakMapPoint[] = useMemo(() => {
-    if (!summary) return [];
-    return summary.areas
-      .filter((a) => a.latitude !== null && a.longitude !== null)
-      .map((a) => {
-        const breakdown = (Object.entries(a.by_syndrome) as [SyndromeKey, number][])
-          .sort((x, y) => y[1] - x[1])
-          .map(([k, count]) => ({ label: SYNDROME_SHORT[k], count }));
-        if (filter === "all") {
-          return { locality: a.locality, lat: a.latitude!, lon: a.longitude!, cases: a.cases, level: a.level, breakdown };
-        }
-        const signal = summary.signals.find((s) => s.locality === a.locality && s.syndrome === filter);
-        const count = a.by_syndrome[filter] || 0;
-        return {
-          locality: a.locality,
-          lat: a.latitude!,
-          lon: a.longitude!,
-          cases: count,
-          level: signal?.level || "normal",
-          breakdown: count ? [{ label: SYNDROME_SHORT[filter], count }] : [],
-        };
-      });
-  }, [summary, filter]);
-
-  const unmapped = useMemo(
-    () => (summary?.areas || []).filter((a) => a.latitude === null).reduce((n, a) => n + a.cases, 0),
-    [summary],
-  );
-  const selected = summary?.areas.find((a) => a.locality === selectedArea) || null;
-
   const handleDemo = async (action: "demo" | "clear", city?: string) => {
     if (!doctorId) return;
     setBusy(action);
@@ -292,7 +244,6 @@ export default function OutbreakWatchPage() {
     try {
       if (action === "demo") await loadOutbreakDemoData(doctorId, city);
       else await clearOutbreakDemoData(doctorId);
-      setSelectedArea(null);
       await refresh();
     } catch (err) {
       setNotice({ type: "error", text: err instanceof Error ? err.message : "Something went wrong." });
@@ -425,7 +376,7 @@ export default function OutbreakWatchPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               Reports appear here automatically as AI calls finish. Patients often mention how they are feeling,
               for example &ldquo;I&apos;ve had fever and joint pain since Monday&rdquo; or &ldquo;bukhar aur badan
-              dard hai&rdquo;. Add each patient&apos;s locality on their profile to place them on the map.
+              dard hai&rdquo;. Add each patient&apos;s locality on their profile so reports are grouped by area.
             </p>
             <div className="mt-5">
               <SampleCityPicker initial="Hubli–Dharwad" busy={busy === "demo"} onLoad={(city) => handleDemo("demo", city)} />
@@ -530,102 +481,56 @@ export default function OutbreakWatchPage() {
               ))}
             </div>
 
-            {/* Map + signals */}
-            <div className="grid gap-6 lg:grid-cols-5">
-              <section className="overflow-hidden rounded-xl border border-border bg-card lg:col-span-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3">
-                  <h2 className="text-sm font-semibold">
-                    Where cases are{summary.demo_region && !summary.call_reports ? ` in ${summary.demo_region}` : ""}, last {summary.window_days} days
-                  </h2>
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                    {(["alert", "watch", "normal"] as const).map((l) => (
-                      <span key={l} className="flex items-center gap-1.5">
-                        <span className="size-2.5 rounded-full" style={{ background: LEVELS[l].color }} />
-                        {LEVELS[l].label}
-                      </span>
-                    ))}
-                    <span className="hidden sm:inline">· Size = cases</span>
+            {/* Signals */}
+            <section className="rounded-xl border border-border bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3">
+                <h2 className="text-sm font-semibold">
+                  Signals{summary.demo_region && !summary.call_reports ? ` in ${summary.demo_region}` : ""}, last {summary.window_days} days
+                </h2>
+                <span className="text-xs text-muted-foreground">Ranked by how unusual</span>
+              </div>
+              <div className="space-y-3 p-4">
+                {flagged.length === 0 ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-3 text-sm text-success">
+                    <ShieldCheck className="mt-0.5 size-4 shrink-0" />
+                    Nothing unusual. Every area is within its normal range.
                   </div>
-                </div>
-                <div className="relative h-[460px]">
-                  <OutbreakMap points={mapPoints} selected={selectedArea} onSelect={setSelectedArea} />
-                  {selected && (
-                    <div className="absolute bottom-3 left-3 z-[400] max-w-xs rounded-lg border border-border bg-card/95 px-4 py-3 text-sm shadow-lg backdrop-blur">
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="font-semibold">{selected.locality}</p>
-                        <LevelPill level={selected.level} />
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">{selected.cases} reports in the last 7 days</p>
-                      <ul className="mt-2 space-y-1">
-                        {(Object.entries(selected.by_syndrome) as [SyndromeKey, number][]).map(([k, v]) => (
-                          <li key={k} className="flex items-center justify-between gap-6 text-xs">
-                            <span className="flex items-center gap-1.5">
-                              <span className="size-2 rounded-full" style={{ background: SYNDROME_COLORS[k] }} />
-                              {SYNDROME_SHORT[k]}
-                            </span>
-                            <span className="tabular-nums">{v}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-                {unmapped > 0 && (
-                  <p className="border-t border-border px-5 py-2 text-xs text-muted-foreground">
-                    {unmapped} report{unmapped === 1 ? "" : "s"} this week from patients without a known locality.
-                    Add it on the patient&apos;s profile to map them.
-                  </p>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {flagged.map((s) => (
+                      <SignalCard key={`${s.locality}-${s.syndrome}`} signal={s} />
+                    ))}
+                  </div>
                 )}
-              </section>
-
-              <section className="flex flex-col rounded-xl border border-border bg-card lg:col-span-2">
-                <div className="flex items-center justify-between border-b border-border px-5 py-3">
-                  <h2 className="text-sm font-semibold">Signals</h2>
-                  <span className="text-xs text-muted-foreground">Ranked by how unusual</span>
-                </div>
-                <div className="max-h-[460px] flex-1 space-y-3 overflow-y-auto p-4">
-                  {flagged.length === 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/5 px-3 py-3 text-sm text-success">
-                      <ShieldCheck className="mt-0.5 size-4 shrink-0" />
-                      Nothing unusual. Every area is within its normal range.
-                    </div>
-                  )}
-                  {flagged.map((s) => (
-                    <SignalCard
-                      key={`${s.locality}-${s.syndrome}`}
-                      signal={s}
-                      selected={selectedArea === s.locality}
-                      onSelect={() => setSelectedArea(s.locality)}
-                    />
-                  ))}
-                  {quiet.length > 0 && (
-                    <details className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
-                      <summary className="cursor-pointer text-muted-foreground">
-                        {quiet.length} area{quiet.length === 1 ? "" : "s"} within normal range
-                      </summary>
-                      <ul className="mt-2 divide-y divide-border">
-                        {quiet.map((s) => (
-                          <li key={`${s.locality}-${s.syndrome}`} className="flex items-center justify-between py-1.5 text-xs">
-                            <span>
-                              {s.locality} · <span className="text-muted-foreground">{SYNDROME_SHORT[s.syndrome]}</span>
-                            </span>
-                            <span className="tabular-nums text-muted-foreground">
-                              {s.observed} vs {s.expected} usual
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                </div>
-              </section>
-            </div>
+                {quiet.length > 0 && (
+                  <details className="rounded-lg border border-border bg-background px-3 py-2 text-sm">
+                    <summary className="cursor-pointer text-muted-foreground">
+                      {quiet.length} area{quiet.length === 1 ? "" : "s"} within normal range
+                    </summary>
+                    <ul className="mt-2 grid gap-x-6 divide-y divide-border sm:grid-cols-2 sm:divide-y-0">
+                      {quiet.map((s) => (
+                        <li key={`${s.locality}-${s.syndrome}`} className="flex items-center justify-between py-1.5 text-xs">
+                          <span>
+                            {s.locality} · <span className="text-muted-foreground">{SYNDROME_SHORT[s.syndrome]}</span>
+                          </span>
+                          <span className="tabular-nums text-muted-foreground">
+                            {s.observed} vs {s.expected} usual
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            </section>
 
             {/* Trend + platelets */}
             <div className="grid gap-6 lg:grid-cols-5">
               <section className="rounded-xl border border-border bg-card p-5 lg:col-span-3">
                 <h2 className="text-sm font-semibold">Daily reports, last 5 weeks</h2>
-                <p className="mb-4 text-xs text-muted-foreground">All areas combined. The shaded week is compared with the four before it.</p>
+                <p className="mb-4 text-xs text-muted-foreground">
+                  All areas combined. The shaded week is compared with the four before it. Tap a syndrome to show or hide it.
+                </p>
                 <TrendChart
                   days={summary.days}
                   trend={summary.trend}

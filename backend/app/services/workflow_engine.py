@@ -634,9 +634,11 @@ async def _handle_send_sms(node: dict, context: dict) -> tuple[bool, dict]:
     patient = context.get("patient", {})
     phone = patient.get("phone")
     data = node.get("data", {})
-    body = data.get("params", {}).get(
-        "message",
-        data.get("message", "You have a message from your healthcare provider."),
+    # AI-built workflows save the param as "", which Twilio rejects.
+    body = (
+        str(data.get("params", {}).get("message") or "").strip()
+        or str(data.get("message") or "").strip()
+        or "You have a message from your healthcare provider."
     )
 
     if not phone:
